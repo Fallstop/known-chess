@@ -53,6 +53,8 @@ export class KnownGame {
 	names = $state({ w: '', b: '' });
 	/** The real lichess game a finished line replayed, once identified. */
 	sourceGame = $state<SourceGame | null>(null);
+	/** Lifecycle of the lichess trace, so the veil can show progress/outcome. */
+	sourceState = $state<'idle' | 'searching' | 'found' | 'none'>('idle');
 	/** Bumped on new-game/takeback so in-flight lookups and autoplay timers abort. */
 	private gen = 0;
 
@@ -157,12 +159,16 @@ export class KnownGame {
 
 	/** Look up which real game the finished line replayed; quietly optional. */
 	private async findSource(g: number): Promise<void> {
+		this.sourceState = 'searching';
 		try {
 			const game = await identify(this.history.map((h) => h.uci));
 			if (g !== this.gen) return;
 			this.sourceGame = game;
+			this.sourceState = game ? 'found' : 'none';
 		} catch {
 			// The link is a bonus; the veil works fine without it.
+			if (g !== this.gen) return;
+			this.sourceState = 'none';
 		}
 	}
 
@@ -206,6 +212,7 @@ export class KnownGame {
 		this.total = 0;
 		this.previewUci = null;
 		this.sourceGame = null;
+		this.sourceState = 'idle';
 		this.phase = 'loading';
 		void this.step(this.gen);
 	}
@@ -221,6 +228,7 @@ export class KnownGame {
 		this.fen = entry.preFen;
 		this.previewUci = null;
 		this.sourceGame = null;
+		this.sourceState = 'idle';
 		void this.step(this.gen);
 	}
 

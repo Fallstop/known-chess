@@ -6,7 +6,7 @@
 	/** Overlay covering the board when the game is over, off the record, or errored. */
 	let { game }: { game: KnownGame } = $props();
 
-	const plate = (p: SourcePlayer) => (p.rating ? `${p.name} (${p.rating})` : p.name);
+	const fmtName = (p: SourcePlayer) => p.name || 'Anonymous';
 </script>
 
 {#if game.phase === 'over' && game.result}
@@ -19,19 +19,56 @@
 				{game.lastEntry.count === 1 ? 'game' : 'games'} ended exactly here.
 			</p>
 		{/if}
-		{#if game.sourceGame}
-			{@const src = game.sourceGame}
-			<a
-				class="veil-source"
-				href="https://lichess.org/{src.id}#{game.history.length}"
-				target="_blank"
-				rel="noopener"
-			>
-				{src.exact ? 'You replayed' : 'Closest match:'}
-				{plate(src.white)} vs {plate(src.black)}{src.month ? `, ${fmtMonth(src.month)}` : ''}
-				(watch it ↗)
-			</a>
+
+		{#if game.history.length}
+			<div class="trace">
+				{#if game.sourceState === 'searching'}
+					<div class="card skeleton" aria-busy="true">
+						<span class="kicker">
+							<span class="spinner"></span> Tracing this game on Lichess…
+						</span>
+						<span class="sk-line w" style="width: 62%"></span>
+						<span class="sk-line b" style="width: 48%"></span>
+					</div>
+				{:else if game.sourceState === 'found' && game.sourceGame}
+					{@const src = game.sourceGame}
+					<a
+						class="card found"
+						href="https://lichess.org/{src.id}#{game.history.length}"
+						target="_blank"
+						rel="noopener"
+					>
+						<span class="kicker">{src.exact ? 'You replayed this game' : 'Closest match on record'}</span>
+
+						<span class="side" class:won={src.winner === 'white'}>
+							<span class="disc white" aria-hidden="true"></span>
+							<span class="pname">{fmtName(src.white)}</span>
+							{#if src.white.rating}<span class="elo">{src.white.rating}</span>{/if}
+							{#if src.winner === 'white'}<span class="badge">♚ won · 1–0</span>{/if}
+						</span>
+						<span class="side" class:won={src.winner === 'black'}>
+							<span class="disc black" aria-hidden="true"></span>
+							<span class="pname">{fmtName(src.black)}</span>
+							{#if src.black.rating}<span class="elo">{src.black.rating}</span>{/if}
+							{#if src.winner === 'black'}<span class="badge">♚ won · 0–1</span>{/if}
+						</span>
+						{#if src.winner === null}
+							<span class="side draw"><span class="disc half" aria-hidden="true"></span>Drawn</span>
+						{/if}
+
+						<span class="cta">
+							<span class="cta-meta">
+								{src.speed ? src.speed : 'game'}{src.month ? ` · ${fmtMonth(src.month)}` : ''}
+							</span>
+							<span class="cta-btn">Open on Lichess <span class="arr">↗</span></span>
+						</span>
+					</a>
+				{:else if game.sourceState === 'none'}
+					<p class="trace-none">This exact game isn't indexed on Lichess.</p>
+				{/if}
+			</div>
 		{/if}
+
 		<button class="ctl primary" onclick={() => game.newGame()}>Play again</button>
 	</div>
 {:else if game.phase === 'dry'}
@@ -60,7 +97,7 @@
 		gap: 0.35rem;
 		text-align: center;
 		padding: 1rem;
-		background: rgba(13, 17, 14, 0.82);
+		background: rgba(13, 17, 14, 0.86);
 		backdrop-filter: blur(3px);
 		border-radius: 8px;
 		animation: veil-in 0.45s cubic-bezier(0.2, 0.9, 0.3, 1) backwards;
@@ -86,19 +123,214 @@
 		font-weight: 600;
 	}
 	.veil-note {
-		margin: 0 0 0.8rem;
+		margin: 0 0 0.6rem;
 		color: var(--ink-dim);
 		font-size: 0.92rem;
 		max-width: 34ch;
 	}
-	.veil-source {
-		margin: -0.4rem 0 0.8rem;
-		color: var(--brass-bright);
-		font-size: 0.92rem;
-		max-width: 40ch;
-		text-decoration: none;
+
+	/* ——— lichess trace card ——— */
+	.trace {
+		width: min(20rem, 86%);
+		margin: 0.1rem 0 1rem;
 	}
-	.veil-source:hover {
-		text-decoration: underline;
+	.card {
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+		padding: 0.85rem 0.95rem 0.7rem;
+		background: linear-gradient(180deg, rgba(37, 50, 43, 0.55), rgba(21, 30, 25, 0.55));
+		border: 1px solid var(--panel-edge);
+		border-radius: 12px;
+		text-align: left;
+		text-decoration: none;
+		color: var(--ink);
+	}
+	.kicker {
+		display: flex;
+		align-items: center;
+		gap: 0.45rem;
+		font-family: var(--mono);
+		font-size: 0.62rem;
+		font-weight: 500;
+		letter-spacing: 0.16em;
+		text-transform: uppercase;
+		color: var(--brass);
+	}
+
+	/* sides */
+	.side {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		font-size: 1rem;
+		font-weight: 600;
+		color: var(--ink-dim);
+	}
+	.side.won {
+		color: var(--ink);
+	}
+	.disc {
+		width: 15px;
+		height: 15px;
+		border-radius: 50%;
+		flex: none;
+	}
+	.disc.white {
+		background: var(--sq-light);
+		box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.3);
+	}
+	.disc.black {
+		background: #1a1410;
+		box-shadow: inset 0 0 0 1.5px var(--ink-faint);
+	}
+	.disc.half {
+		background: linear-gradient(90deg, var(--sq-light) 50%, #1a1410 50%);
+		box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.3);
+	}
+	.pname {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.elo {
+		font-family: var(--mono);
+		font-size: 0.72rem;
+		color: var(--ink-faint);
+	}
+	.badge {
+		margin-left: auto;
+		font-family: var(--mono);
+		font-size: 0.6rem;
+		font-weight: 600;
+		letter-spacing: 0.1em;
+		text-transform: uppercase;
+		color: var(--brass-bright);
+		background: var(--brass-tint);
+		border: 1px solid var(--brass-soft);
+		border-radius: 999px;
+		padding: 0.12rem 0.45rem;
+		white-space: nowrap;
+	}
+	.side.draw {
+		font-weight: 500;
+		color: var(--ink-dim);
+	}
+
+	/* call to action */
+	.cta {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 0.6rem;
+		margin-top: 0.2rem;
+		padding-top: 0.6rem;
+		border-top: 1px solid var(--panel-edge);
+	}
+	.cta-meta {
+		font-family: var(--mono);
+		font-size: 0.66rem;
+		letter-spacing: 0.06em;
+		color: var(--ink-faint);
+		text-transform: capitalize;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		min-width: 0;
+	}
+	.cta-btn {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.35rem;
+		font-family: var(--mono);
+		font-size: 0.66rem;
+		font-weight: 600;
+		letter-spacing: 0.1em;
+		text-transform: uppercase;
+		color: #14110a;
+		background: var(--brass);
+		border-radius: 999px;
+		padding: 0.4rem 0.75rem;
+		flex: none;
+		transition: background 0.15s, transform 0.15s;
+	}
+	.arr {
+		font-size: 0.8rem;
+		transition: transform 0.2s;
+	}
+
+	.card.found {
+		cursor: pointer;
+		transition: border-color 0.2s, box-shadow 0.2s, transform 0.2s;
+		animation: card-in 0.4s cubic-bezier(0.2, 0.9, 0.3, 1) backwards;
+	}
+	.card.found:hover {
+		border-color: var(--brass-soft);
+		box-shadow: 0 10px 30px -14px rgba(0, 0, 0, 0.8), 0 0 0 1px var(--brass-soft) inset;
+		transform: translateY(-2px);
+	}
+	.card.found:hover .cta-btn {
+		background: var(--brass-bright);
+	}
+	.card.found:hover .arr {
+		transform: translate(2px, -2px);
+	}
+	.card.found:focus-visible {
+		outline: 2px solid var(--brass-bright);
+		outline-offset: 2px;
+	}
+	@keyframes card-in {
+		from {
+			opacity: 0;
+			transform: translateY(8px);
+		}
+	}
+
+	/* searching skeleton */
+	.spinner {
+		width: 11px;
+		height: 11px;
+		border-radius: 50%;
+		border: 1.5px solid var(--brass-soft);
+		border-top-color: var(--brass-bright);
+		animation: spin 0.7s linear infinite;
+	}
+	@keyframes spin {
+		to {
+			transform: rotate(360deg);
+		}
+	}
+	.sk-line {
+		height: 14px;
+		border-radius: 5px;
+		background: linear-gradient(90deg, var(--panel-edge) 25%, rgba(201, 160, 78, 0.12) 50%, var(--panel-edge) 75%);
+		background-size: 200% 100%;
+		animation: shimmer 1.3s ease-in-out infinite;
+	}
+	.sk-line.b {
+		opacity: 0.7;
+	}
+	@keyframes shimmer {
+		to {
+			background-position: -200% 0;
+		}
+	}
+	.trace-none {
+		margin: 0;
+		font-family: var(--mono);
+		font-size: 0.68rem;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+		color: var(--ink-faint);
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.spinner,
+		.sk-line {
+			animation: none;
+		}
+		.card.found {
+			animation: none;
+		}
 	}
 </style>
