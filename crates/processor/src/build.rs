@@ -2,13 +2,15 @@
 //!
 //! Accepts month tags (e.g. `2026-05`, resolved to a downloaded dump) or paths
 //! to `.pgn`/`.pgn.zst` files, and merges every one into the single combined
-//! book at `[storage].book` (or `--output`). The existing book is folded in
-//! first so adding a month is incremental — the dumps already baked in are not
-//! reprocessed. A progress bar tracks each (compressed) input. Every dump merged
-//! is recorded in the book's `.sources` manifest so `list` can show it processed.
+//! book at `[storage].book` (or `--output`). Adding a month is incremental: new
+//! dumps are tallied in memory, then stream-merged with the existing (mmap'd)
+//! book into a temp file that replaces it — dumps already baked in are never
+//! reprocessed and the old book is never loaded into RAM. A progress bar tracks
+//! each (compressed) input. Every dump merged is recorded in the book's
+//! `.sources` manifest so `list` can show it processed.
 
 use std::fs::File;
-use std::io::{self, BufReader, Read, Write};
+use std::io::{self, BufReader, Read};
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
@@ -16,7 +18,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use memmap2::Mmap;
 use pgn_reader::{BufferedReader, RawHeader, SanPlus, Skip, Visitor};
 use shakmaty::{Chess, Position};
-use shared::{position_hash, Book, BookBuilder, Config, EncodedMove};
+use shared::{canonical_index, position_hash, write_merged, Book, BookBuilder, Config};
 
 use crate::fetch;
 
@@ -51,17 +53,21 @@ pub fn run(cfg: &Config, targets: &[String], opts: &BuildOpts) -> Result<()> {
         bail!("nothing to process");
     }
 
-    // Start from the existing book (incremental add) unless --fresh.
-    let mut builder = BookBuilder::new();
+    // Keep the existing book for a streaming merge (incremental add) unless
+    // --fresh. It stays mmap'd — never loaded back into memory.
     let mut sources: Vec<String> = Vec::new();
-    if !opts.fresh && output.is_file() {
-        tracing::info!(book = %output.display(), "folding in existing book");
-        let existing = open_book(&output)
-            .with_context(|| format!("opening existing book {}", output.display()))?;
-        builder.absorb(&existing);
+    let existing: Option<Book<Mmap>> = if !opts.fresh && output.is_file() {
+        tracing::info!(book = %output.display(), "will stream-merge with existing book");
         sources = read_sources(&manifest_path);
-    }
+        Some(
+            open_book(&output)
+                .with_context(|| format!("opening existing book {}", output.display()))?,
+        )
+    } else {
+        None
+    };
 
+    let mut builder = BookBuilder::new();
     for (path, dump_name) in &inputs {
         process_file(path, &mut builder, opts)
             .with_context(|| format!("processing {}", path.display()))?;
@@ -69,17 +75,32 @@ pub fn run(cfg: &Config, targets: &[String], opts: &BuildOpts) -> Result<()> {
             sources.push(dump_name.clone());
         }
     }
+    let new_entries = builder.into_sorted();
 
-    let bytes = builder.into_bytes();
+    // Write to a temp file and rename: the existing book is being read out of
+    // an mmap of the destination path while we write.
     if let Some(parent) = output.parent() {
         std::fs::create_dir_all(parent).ok();
     }
-    File::create(&output)
-        .with_context(|| format!("creating {}", output.display()))?
-        .write_all(&bytes)?;
+    let tmp = {
+        let mut name = output.as_os_str().to_os_string();
+        name.push(".tmp");
+        PathBuf::from(name)
+    };
+    let mut file = io::BufWriter::new(
+        File::create(&tmp).with_context(|| format!("creating {}", tmp.display()))?,
+    );
+    let stats = write_merged(existing.as_ref(), &new_entries, &mut file)
+        .with_context(|| format!("writing {}", tmp.display()))?;
+    drop(file);
+    drop(existing); // unmap before replacing the file underneath
+    std::fs::rename(&tmp, &output)
+        .with_context(|| format!("renaming {} into place", tmp.display()))?;
+
     write_sources(&manifest_path, &sources)?;
     tracing::info!(
-        bytes = bytes.len(),
+        positions = stats.positions,
+        bytes = stats.bytes,
         path = %output.display(),
         sources = sources.len(),
         "wrote combined book"
@@ -274,7 +295,8 @@ struct BookVisitor<'a> {
     require_board_end: bool,
     ply: usize,
     skip_current: bool,
-    pending: Vec<(u64, EncodedMove)>,
+    /// (position hash, canonical legal-move index) for each ply so far.
+    pending: Vec<(u64, u8)>,
     games: u64,
     skipped_games: u64,
     progress: ProgressBar,
@@ -335,12 +357,19 @@ impl Visitor for BookVisitor<'_> {
             return;
         }
         match san_plus.san.to_move(&self.pos) {
-            Ok(mv) => {
-                let hash = position_hash(&self.pos);
-                self.pending.push((hash, EncodedMove::encode(&mv)));
-                self.pos.play_unchecked(&mv);
-                self.ply += 1;
-            }
+            // `canonical_index` is Some for every legal move; the guard is
+            // pure defensiveness.
+            Ok(mv) => match canonical_index(&self.pos, &mv) {
+                Some(index) => {
+                    let hash = position_hash(&self.pos);
+                    self.pending.push((hash, index));
+                    self.pos.play_unchecked(&mv);
+                    self.ply += 1;
+                }
+                None => {
+                    self.skip_current = true;
+                }
+            },
             Err(_) => {
                 self.skip_current = true;
             }
@@ -359,8 +388,8 @@ impl Visitor for BookVisitor<'_> {
             && (!self.require_board_end || board_ended);
 
         if qualifies {
-            for (hash, mv) in self.pending.drain(..) {
-                self.builder.record(hash, mv);
+            for (hash, index) in self.pending.drain(..) {
+                self.builder.record(hash, index);
             }
             self.games += 1;
         } else {

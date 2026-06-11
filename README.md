@@ -39,27 +39,36 @@ reached by different move orders) collapse onto the same hash automatically.
 
 ### The book format
 
-All little-endian. See `crates/shared/src/book.rs` for the authoritative spec.
+All little-endian; bitstreams are LSB-first within bytes. See
+`crates/shared/src/book.rs` for the authoritative spec.
 
 ```
-magic    [u8; 8]  = b"KNCHESS1"
-version  u32
-count    u32                       number of positions
+header (24 bytes)
+  magic      [u8; 8] = b"KNCHESS2"
+  version    u32
+  count      u64                   number of positions
+  rice_k     u8                    Golomb-Rice parameter for hash gaps
 
-entry table   (count × 16 bytes, sorted ascending by hash)
-  hash       u64
-  moves_off  u32                   offset into the moves blob
-  moves_len  u16
-  _pad       u16
+block index   (ceil(count / 256) × 16 bytes)
+  first_hash u64                   hash of the block's first entry
+  data_off   u64                   byte offset of the block's bitstream
 
-moves blob    (6 bytes per record)
-  mv         u16                   packed move: from | to<<6 | promo<<12
-  count      u32                   games that played this move from here
+data          (one bitstream per block of ≤256 entries, sorted by hash)
+  hash       Rice(rice_k)          gap from the previous hash, minus 1
+  nmoves     Elias-gamma
+  per move:  index u8              rank in the position's legal moves,
+             count Elias-gamma     sorted by their 16-bit packing
 ```
 
-A move is packed into 16 bits and resolved back to a concrete move by matching
-it against the live position's legal moves — so castling and en-passant need no
-special encoding.
+Almost every entry is a position seen once with one move, and the format prices
+it accordingly: sorted-hash gaps cost ~(64 − log₂ n) + 2 bits instead of 64, a
+move is an 8-bit index into the position's canonically-ordered legal moves
+(every consumer holds the live position, and chess never exceeds 218 legal
+moves), and a count of 1 is a single gamma bit — about 6 bytes per position
+where the v1 table spent 22. Lookups binary-search the block index and decode
+one block straight out of the `mmap`; incremental builds stream-merge the
+existing book with each new month's sorted tallies instead of loading it back
+into memory.
 
 ## Quickstart
 

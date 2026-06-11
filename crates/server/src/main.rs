@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use shakmaty::fen::Fen;
 use shakmaty::san::SanPlus;
 use shakmaty::{CastlingMode, Chess};
-use shared::{position_hash, Book, Config};
+use shared::{canonical_legal, position_hash, Book, Config};
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
@@ -83,7 +83,7 @@ struct MetaResponse {
 /// Static facts about the loaded book, for the frontend's header.
 async fn meta(State(book): State<SharedBook>) -> Json<MetaResponse> {
     Json(MetaResponse {
-        positions: book.position_count() as u64,
+        positions: book.position_count(),
     })
 }
 
@@ -97,7 +97,7 @@ struct LookupRequest {
 struct KnownMove {
     uci: String,
     san: String,
-    count: u32,
+    count: u64,
 }
 
 #[derive(Serialize)]
@@ -125,15 +125,17 @@ async fn lookup(
     let hash = position_hash(&pos);
     let stats = book.lookup(hash);
 
+    // The book stores each move as an index into the canonical legal-move
+    // ordering; resolve against the live position to emit both UCI (for the
+    // client engine) and SAN (for display).
+    let legal = canonical_legal(&pos);
     let mut moves = Vec::with_capacity(stats.len());
     let mut total: u64 = 0;
     for stat in stats {
-        total += stat.count as u64;
-        // Resolve the packed move against the live position so we can emit both
-        // UCI (for the client engine) and SAN (for display).
-        if let Some(mv) = stat.mv.resolve(&pos) {
+        total += stat.count;
+        if let Some(mv) = legal.get(stat.index as usize) {
             let uci = mv.to_uci(CastlingMode::Standard).to_string();
-            let san = SanPlus::from_move(pos.clone(), &mv).to_string();
+            let san = SanPlus::from_move(pos.clone(), mv).to_string();
             moves.push(KnownMove {
                 uci,
                 san,
