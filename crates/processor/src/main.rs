@@ -82,6 +82,12 @@ enum Command {
         /// Start a new book instead of adding to the existing combined book.
         #[arg(long, default_value_t = false)]
         fresh: bool,
+
+        /// Spill accumulated positions to disk once worker memory crosses this
+        /// many GiB, keeping peak RAM bounded when processing many dumps at
+        /// once (0 = never spill).
+        #[arg(long, default_value_t = 40)]
+        max_mem_gb: u64,
     },
 }
 
@@ -107,6 +113,7 @@ fn main() -> Result<()> {
             jobs,
             output,
             fresh,
+            max_mem_gb,
         } => build::run(
             &cfg,
             &targets,
@@ -117,6 +124,7 @@ fn main() -> Result<()> {
                 jobs,
                 output,
                 fresh,
+                max_mem_bytes: max_mem_gb.saturating_mul(1 << 30),
             },
         ),
     }

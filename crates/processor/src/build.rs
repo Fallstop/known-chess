@@ -6,8 +6,11 @@
 //! thread decompresses and splits each dump into batches of whole games, a
 //! pool of worker threads (`--jobs`) replays them into per-thread tallies, and
 //! the sorted runs are k-way stream-merged with the existing (mmap'd) book
-//! into a temp file that replaces it. Dumps already baked in are never
-//! reprocessed and the old book is never loaded into RAM. A progress bar
+//! into a temp file that replaces it. To bound RAM, a worker whose tally grows
+//! past its share of `--max-mem-gb` spills it to an on-disk book that the final
+//! merge folds in just like the existing book (so processing many dumps at once
+//! never accumulates the whole corpus in memory). Dumps already baked in are
+//! never reprocessed and the old book is never loaded into RAM. A progress bar
 //! tracks each (compressed) input. Every dump merged is recorded in the book's
 //! `.sources` manifest so `list` can show it processed.
 
@@ -22,7 +25,10 @@ use indicatif::{ProgressBar, ProgressStyle};
 use memmap2::Mmap;
 use pgn_reader::{BufferedReader, RawHeader, SanPlus, Skip, Visitor};
 use shakmaty::{Chess, Position};
-use shared::{canonical_index, position_hash, write_merged_many_progress, Book, BookBuilder, Config};
+use shared::{
+    canonical_index, position_hash, write_merged, write_merged_many_progress, Book, BookBuilder,
+    Config,
+};
 
 use crate::fetch;
 
@@ -41,7 +47,15 @@ pub struct BuildOpts {
     pub output: Option<PathBuf>,
     /// Ignore (and overwrite) any existing combined book instead of adding to it.
     pub fresh: bool,
+    /// Spill a worker's tally to disk once it crosses its share of this many
+    /// bytes of estimated heap (0 = never spill, keep everything in RAM).
+    pub max_mem_bytes: u64,
 }
+
+/// Conservative heap estimate per position stored in a [`BookBuilder`]'s
+/// hashmap (8-byte key + 16-byte slot + table/control overhead). Used only to
+/// decide when to spill, so over-estimating just spills a little early.
+const EST_BYTES_PER_POSITION: u64 = 48;
 
 pub fn run(cfg: &Config, targets: &[String], opts: &BuildOpts) -> Result<()> {
     let output = opts.output.clone().unwrap_or_else(|| cfg.book_path());
@@ -81,7 +95,7 @@ pub fn run(cfg: &Config, targets: &[String], opts: &BuildOpts) -> Result<()> {
         0 => std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4),
         n => n,
     };
-    let (runs, tallies) = process_inputs(&inputs, opts, jobs)?;
+    let (runs, spill_paths, tallies) = process_inputs(&inputs, opts, jobs, &output)?;
     for ((path, dump_name), (games, skipped)) in inputs.iter().zip(&tallies) {
         tracing::info!(input = %path.display(), games, skipped, "processed dump");
         if !sources.contains(dump_name) {
@@ -102,18 +116,34 @@ pub fn run(cfg: &Config, targets: &[String], opts: &BuildOpts) -> Result<()> {
     let mut file = io::BufWriter::new(
         File::create(&tmp).with_context(|| format!("creating {}", tmp.display()))?,
     );
-    let estimate = existing.as_ref().map_or(0, |b| b.position_count())
+
+    // Spilled tallies are byte-identical to a book, so the merge folds them in
+    // alongside the existing book as extra mmap'd sources.
+    let spill_books: Vec<Book<Mmap>> = spill_paths
+        .iter()
+        .map(|p| open_book(p).with_context(|| format!("opening spill {}", p.display())))
+        .collect::<Result<_>>()?;
+    let mut olds: Vec<&Book<Mmap>> = Vec::with_capacity(spill_books.len() + 1);
+    olds.extend(existing.as_ref());
+    olds.extend(&spill_books);
+
+    let estimate = olds.iter().map(|b| b.position_count()).sum::<u64>()
         + runs.iter().map(|r| r.len() as u64).sum::<u64>();
     let pb = position_bar(estimate);
-    let stats = write_merged_many_progress(existing.as_ref(), &runs, &mut file, |written| {
+    let stats = write_merged_many_progress(&olds, &runs, &mut file, |written| {
         pb.set_position(written);
     })
     .with_context(|| format!("writing {}", tmp.display()))?;
     pb.finish_and_clear();
     drop(file);
+    drop(olds);
     drop(existing); // unmap before replacing the file underneath
+    drop(spill_books); // unmap before deleting the spill files
     std::fs::rename(&tmp, &output)
         .with_context(|| format!("renaming {} into place", tmp.display()))?;
+    for path in &spill_paths {
+        std::fs::remove_file(path).ok();
+    }
 
     write_sources(&manifest_path, &sources)?;
     tracing::info!(
@@ -242,20 +272,37 @@ fn catch_up_inputs(cfg: &Config, manifest_path: &Path, fresh: bool) -> Result<Ve
     Ok(out)
 }
 
+/// One sorted run per worker, the on-disk spill-book paths, and per-input
+/// (kept, skipped) game tallies — everything [`process_inputs`] hands back.
+type Processed = (Vec<shared::SortedEntries>, Vec<PathBuf>, Vec<(u64, u64)>);
+
 /// Parse every input with a pool of parser threads. The main thread
 /// decompresses each dump and splits it into batches of whole games; workers
 /// replay games into per-thread builders, sorted into runs once the channel
-/// drains. Returns one sorted run per worker plus per-input (kept, skipped)
-/// tallies, in input order.
+/// drains. A worker whose builder grows past its share of `max_mem_bytes`
+/// spills it to an on-disk book (named off `spill_base`) and starts a fresh
+/// one, bounding peak RAM regardless of how many dumps are processed at once.
+/// Returns one sorted run per worker, the spill-book paths, and per-input
+/// (kept, skipped) tallies in input order.
 fn process_inputs(
     inputs: &[(PathBuf, String)],
     opts: &BuildOpts,
     jobs: usize,
-) -> Result<(Vec<shared::SortedEntries>, Vec<(u64, u64)>)> {
+    spill_base: &Path,
+) -> Result<Processed> {
     let tallies: Vec<(AtomicU64, AtomicU64)> = inputs
         .iter()
         .map(|_| (AtomicU64::new(0), AtomicU64::new(0)))
         .collect();
+    // Each worker keeps its own builder, so split the budget across them. 0
+    // disables spilling (u64::MAX is never reached).
+    let per_worker_budget = if opts.max_mem_bytes == 0 {
+        u64::MAX
+    } else {
+        (opts.max_mem_bytes / jobs as u64).max(1)
+    };
+    let spill_counter = AtomicU64::new(0);
+    let spill_paths: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
     // Bounded so decompression can't run unboundedly ahead of the parsers.
     let (tx, rx) = mpsc::sync_channel::<(usize, Vec<u8>)>(jobs * 2);
     let rx = Mutex::new(rx);
@@ -263,7 +310,7 @@ fn process_inputs(
     let runs = std::thread::scope(|scope| -> Result<Vec<shared::SortedEntries>> {
         let workers: Vec<_> = (0..jobs)
             .map(|_| {
-                scope.spawn(|| {
+                scope.spawn(|| -> Result<shared::SortedEntries> {
                     let mut builder = BookBuilder::new();
                     loop {
                         // Hold the lock only to receive; parsing runs unlocked.
@@ -277,8 +324,14 @@ fn process_inputs(
                         let (kept, skipped) = &tallies[file_idx];
                         kept.fetch_add(visitor.games, Ordering::Relaxed);
                         skipped.fetch_add(visitor.skipped_games, Ordering::Relaxed);
+
+                        if builder.position_count() as u64 * EST_BYTES_PER_POSITION
+                            >= per_worker_budget
+                        {
+                            spill_builder(&mut builder, spill_base, &spill_counter, &spill_paths)?;
+                        }
                     }
-                    builder.into_sorted()
+                    Ok(builder.into_sorted())
                 })
             })
             .collect();
@@ -289,17 +342,45 @@ fn process_inputs(
         }
         drop(tx); // close the channel so workers finish and sort their runs
 
-        Ok(workers
+        workers
             .into_iter()
             .map(|w| w.join().expect("parser thread panicked"))
-            .collect())
+            .collect()
     })?;
 
     let tallies = tallies
         .iter()
         .map(|(kept, skipped)| (kept.load(Ordering::Relaxed), skipped.load(Ordering::Relaxed)))
         .collect();
-    Ok((runs, tallies))
+    Ok((runs, spill_paths.into_inner().unwrap(), tallies))
+}
+
+/// Drain a worker's builder to an on-disk book (so its RAM is freed) and record
+/// the path for the final merge. The builder is left empty, ready to refill.
+fn spill_builder(
+    builder: &mut BookBuilder,
+    base: &Path,
+    counter: &AtomicU64,
+    paths: &Mutex<Vec<PathBuf>>,
+) -> Result<()> {
+    let sorted = std::mem::take(builder).into_sorted();
+    if sorted.is_empty() {
+        return Ok(());
+    }
+    let n = counter.fetch_add(1, Ordering::Relaxed);
+    let path = {
+        let mut name = base.as_os_str().to_os_string();
+        name.push(format!(".spill{n}"));
+        PathBuf::from(name)
+    };
+    let mut file = io::BufWriter::new(
+        File::create(&path).with_context(|| format!("creating spill {}", path.display()))?,
+    );
+    write_merged(None::<&Book<Mmap>>, &sorted, &mut file)
+        .with_context(|| format!("writing spill {}", path.display()))?;
+    tracing::info!(path = %path.display(), positions = sorted.len(), "spilled tally to disk");
+    paths.lock().unwrap().push(path);
+    Ok(())
 }
 
 /// Split one dump into batches of whole games and queue them for the parser

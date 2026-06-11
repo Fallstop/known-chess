@@ -49,7 +49,8 @@
 //! sorted entries. The old book is never loaded back into memory, which keeps
 //! fold RAM proportional to the *new* month, not the whole history.
 
-use std::collections::HashMap;
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashMap};
 use std::io::{self, Write};
 
 pub const MAGIC: &[u8; 8] = b"KNCHESS2";
@@ -449,14 +450,16 @@ pub fn write_merged<B: AsRef<[u8]>, W: Write>(
 /// Stream-merge an existing book (if any) with any number of sorted runs
 /// (typically one per worker thread), writing a complete new book to `out`.
 /// Move counts for positions present in several inputs are summed. No input is
-/// held in memory beyond one entry at a time, and the run count stays small,
-/// so heads are scanned linearly rather than through a heap.
+/// held in memory beyond one entry at a time; source heads are ordered through
+/// a min-heap, so the cost stays O(log sources) per entry even when a
+/// memory-bounded build leaves hundreds of spill books to fold in.
 pub fn write_merged_many<B: AsRef<[u8]>, W: Write>(
     old: Option<&Book<B>>,
     runs: &[SortedEntries],
     out: W,
 ) -> io::Result<WriteStats> {
-    write_merged_many_progress(old, runs, out, |_| {})
+    let olds: Vec<&Book<B>> = old.into_iter().collect();
+    write_merged_many_progress(&olds, runs, out, |_| {})
 }
 
 /// How often [`write_merged_many_progress`] reports: every 65 536 positions
@@ -464,38 +467,54 @@ pub fn write_merged_many<B: AsRef<[u8]>, W: Write>(
 /// enough to keep a progress bar moving.
 const PROGRESS_INTERVAL: u64 = 1 << 16;
 
-/// Like [`write_merged_many`], but calls `progress` with the running count of
-/// positions emitted, every [`PROGRESS_INTERVAL`] positions and once at the
-/// end. Lets a caller drive a progress bar without paying a callback per
-/// position. The merge total is bounded above by `old.position_count()` plus
-/// the run lengths (positions shared across inputs collapse into one), so a
-/// bar sized to that estimate only ever fills early, never overruns.
+/// Like [`write_merged_many`], but takes any number of existing books (the
+/// combined book plus, optionally, on-disk spill books from a memory-bounded
+/// build) and calls `progress` with the running count of positions emitted,
+/// every [`PROGRESS_INTERVAL`] positions and once at the end. Lets a caller
+/// drive a progress bar without paying a callback per position. The merge total
+/// is bounded above by the `olds` position counts plus the run lengths
+/// (positions shared across inputs collapse into one), so a bar sized to that
+/// estimate only ever fills early, never overruns.
 pub fn write_merged_many_progress<B: AsRef<[u8]>, W: Write>(
-    old: Option<&Book<B>>,
+    olds: &[&Book<B>],
     runs: &[SortedEntries],
     mut out: W,
     mut progress: impl FnMut(u64),
 ) -> io::Result<WriteStats> {
-    let estimate = old.map_or(0, |b| b.position_count())
+    let estimate = olds.iter().map(|b| b.position_count()).sum::<u64>()
         + runs.iter().map(|r| r.0.len() as u64).sum::<u64>();
     let mut writer = BookWriter::new(rice_k_for(estimate));
 
-    let mut sources: Vec<MergeSource<'_, B>> = Vec::with_capacity(runs.len() + 1);
-    if let Some(book) = old {
+    let mut sources: Vec<MergeSource<'_, B>> = Vec::with_capacity(runs.len() + olds.len());
+    for book in olds {
         sources.push(MergeSource::Old(book.iter().peekable()));
     }
     sources.extend(runs.iter().map(|r| MergeSource::Run(r.0.iter().peekable())));
 
+    // Min-heap over each source's current head hash, so finding the next hash to
+    // emit is O(log sources) rather than a linear scan of every source. Each
+    // source's hashes are strictly increasing, so a source re-pushed after being
+    // drained always lands strictly above the hash just emitted.
+    let mut heap: BinaryHeap<Reverse<(u64, usize)>> = BinaryHeap::with_capacity(sources.len());
+    for (i, source) in sources.iter_mut().enumerate() {
+        if let Some(h) = source.peek_hash() {
+            heap.push(Reverse((h, i)));
+        }
+    }
+
     let mut moves: Vec<(u8, u64)> = Vec::new();
     let mut written: u64 = 0;
-    loop {
-        let Some(min) = sources.iter_mut().filter_map(|s| s.peek_hash()).min() else {
-            break;
-        };
+    while let Some(&Reverse((min, _))) = heap.peek() {
         moves.clear();
-        for source in &mut sources {
-            if source.peek_hash() == Some(min) {
-                source.take_into(&mut moves);
+        // Drain every source whose head is this minimum hash, advancing each.
+        while let Some(&Reverse((h, idx))) = heap.peek() {
+            if h != min {
+                break;
+            }
+            heap.pop();
+            sources[idx].take_into(&mut moves);
+            if let Some(next) = sources[idx].peek_hash() {
+                heap.push(Reverse((next, idx)));
             }
         }
         combine_moves(&mut moves);
@@ -874,6 +893,50 @@ mod tests {
             }
             assert_eq!(book.lookup(h), expected, "hash #{i}");
         }
+    }
+
+    #[test]
+    fn merges_multiple_old_books_like_spills() {
+        // Mirrors a memory-bounded build: the existing book plus several on-disk
+        // spill books, all folded together and summed with leftover in-RAM runs.
+        let existing = {
+            let mut b = BookBuilder::new();
+            b.record_n(10, 1, 3);
+            b.record_n(30, 2, 1);
+            write_fresh(b)
+        };
+        let spill_a = {
+            let mut b = BookBuilder::new();
+            b.record_n(10, 1, 2); // sums with the existing book at hash 10
+            b.record_n(20, 4, 5); // new position only in this spill
+            write_fresh(b)
+        };
+        let spill_b = {
+            let mut b = BookBuilder::new();
+            b.record_n(30, 2, 4); // sums with the existing book at hash 30
+            b.record_n(10, 7, 1); // new move at a shared position
+            write_fresh(b)
+        };
+        let existing = Book::open(existing.as_slice()).unwrap();
+        let spill_a = Book::open(spill_a.as_slice()).unwrap();
+        let spill_b = Book::open(spill_b.as_slice()).unwrap();
+
+        let mut leftover = BookBuilder::new();
+        leftover.record_n(20, 4, 1); // sums with spill_a at hash 20
+        let runs = [leftover.into_sorted()];
+
+        let mut merged = Vec::new();
+        let olds = [&existing, &spill_a, &spill_b];
+        let stats = write_merged_many_progress(&olds, &runs, &mut merged, |_| {}).unwrap();
+        assert_eq!(stats.positions, 3);
+
+        let book = Book::open(merged.as_slice()).unwrap();
+        assert_eq!(
+            book.lookup(10),
+            vec![MoveStat { index: 1, count: 5 }, MoveStat { index: 7, count: 1 }]
+        );
+        assert_eq!(book.lookup(20), vec![MoveStat { index: 4, count: 6 }]);
+        assert_eq!(book.lookup(30), vec![MoveStat { index: 2, count: 5 }]);
     }
 
     #[test]
