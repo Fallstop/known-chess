@@ -19,6 +19,12 @@
 		checkSquare?: string | null;
 		/** A move (UCI) to spotlight, e.g. while hovering the continuations list. */
 		previewUci?: string | null;
+		/**
+		 * Keep pieces without a known move dimmed even while input is locked
+		 * (during lookups and forced lines), so the dimming doesn't flicker
+		 * off and back on around every move.
+		 */
+		dimInactive?: boolean;
 		/** Called with the chosen move in UCI when the player completes a move. */
 		onMove: (uci: string) => void;
 	}
@@ -31,6 +37,7 @@
 		lastMove = null,
 		checkSquare = null,
 		previewUci = null,
+		dimInactive = false,
 		onMove
 	}: Props = $props();
 
@@ -179,6 +186,8 @@
 		void allowed;
 		selected = null;
 		promo = null;
+		drag = null;
+		dragOver = null;
 	});
 
 	const previewFrom = $derived(previewUci ? previewUci.slice(0, 2) : null);
@@ -339,7 +348,7 @@
 			class:fresh={p.fresh}
 			class:lift={hovered === p.square && interactive && byFrom.has(p.square)}
 			class:dragged
-			class:recede={interactive && !byFrom.has(p.square)}
+			class:recede={(interactive || dimInactive) && !byFrom.has(p.square)}
 			style={dragged && drag
 				? `transform: translate(${drag.x - cellPx() / 2}px, ${drag.y - cellPx() / 2}px)`
 				: `--x:${xOf(fileOf(p.square))};--y:${yOf(rankOf(p.square))};--d:${p.delay}ms`}
@@ -452,30 +461,25 @@
 	.sq.last::before {
 		background: var(--brass-tint-strong);
 	}
-	.sq.movable::after {
+	/* The glow lives on every square at opacity 0 and only fades in/out, so
+	   re-marking squares between moves never restarts an animation. */
+	.sq::after {
 		content: '';
 		position: absolute;
 		inset: 0;
+		pointer-events: none;
 		background: radial-gradient(circle at 50% 60%, var(--brass) 0%, rgba(201, 160, 78, 0.4) 48%, transparent 70%);
 		box-shadow: inset 0 0 0 2.5px rgba(201, 160, 78, 0.65);
-		opacity: 0.55;
-		animation: breathe 2.6s ease-in-out infinite;
+		opacity: 0;
+		transition: opacity 0.25s ease;
+	}
+	.sq.movable::after {
+		opacity: 0.6;
 	}
 	.sq.dark.movable::after {
-		opacity: 0.7;
-	}
-	@keyframes breathe {
-		50% {
-			opacity: 0.95;
-		}
-	}
-	@media (prefers-reduced-motion: reduce) {
-		.sq.movable::after {
-			animation: none;
-		}
+		opacity: 0.75;
 	}
 	.sq.hot::after {
-		animation: none;
 		opacity: 1;
 	}
 	.sq.dragover::before {

@@ -3,15 +3,21 @@
 //! lichess publishes one zstd-compressed PGN per month, indexed at
 //! `[source].list_url`. `list` shows every month and whether we've downloaded
 //! and/or processed it; `get` downloads the dumps for the requested tags into
-//! `[storage].downloads`.
+//! `[storage].downloads`, up to [`MAX_DOWNLOAD_JOBS`] in parallel.
 
 use std::fs::File;
 use std::io::{self, Write};
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
 
 use anyhow::{bail, Context, Result};
-use indicatif::{ProgressBar, ProgressStyle};
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use shared::Config;
+
+/// Hard cap on concurrent downloads, so a broad tag (a whole year, say) can't
+/// hammer lichess with one connection per month.
+pub const MAX_DOWNLOAD_JOBS: usize = 5;
 
 /// One entry from the dump list: a month tag, its download URL, and filename.
 #[derive(Debug, Clone)]
@@ -122,11 +128,12 @@ pub fn cmd_list(cfg: &Config, query: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-pub fn cmd_get(cfg: &Config, tags: &[String]) -> Result<()> {
+pub fn cmd_get(cfg: &Config, tags: &[String], jobs: usize) -> Result<()> {
     let entries = fetch_list(&cfg.source.list_url)?;
 
-    // Resolve tags to a de-duplicated, newest-first set of entries.
-    let mut selected: Vec<&Entry> = Vec::new();
+    // Resolve tags to a de-duplicated, newest-first set of entries. A tag can
+    // match many months (`2014` selects the whole year).
+    let mut selected: Vec<Entry> = Vec::new();
     for tag in tags {
         let matches = match_tag(&entries, tag);
         if matches.is_empty() {
@@ -134,7 +141,7 @@ pub fn cmd_get(cfg: &Config, tags: &[String]) -> Result<()> {
         }
         for e in matches {
             if !selected.iter().any(|s| s.tag == e.tag) {
-                selected.push(e);
+                selected.push(e.clone());
             }
         }
     }
@@ -145,32 +152,74 @@ pub fn cmd_get(cfg: &Config, tags: &[String]) -> Result<()> {
     std::fs::create_dir_all(&cfg.storage.downloads)
         .with_context(|| format!("creating {}", cfg.storage.downloads.display()))?;
 
-    for e in selected {
-        let dest = cfg.download_path(&e.filename);
-        if dest.is_file() {
-            let size = dest.metadata().map(|m| m.len()).unwrap_or(0);
-            tracing::info!(tag = %e.tag, size = %human_size(size), "already downloaded");
-            continue;
-        }
-        tracing::info!(tag = %e.tag, url = %e.url, "downloading");
-        download(&e.url, &dest).with_context(|| format!("downloading {}", e.tag))?;
-        let size = dest.metadata().map(|m| m.len()).unwrap_or(0);
-        tracing::info!(tag = %e.tag, file = %dest.display(), size = %human_size(size), "saved");
+    let pending: Vec<Entry> = selected
+        .into_iter()
+        .filter(|e| {
+            let dest = cfg.download_path(&e.filename);
+            if dest.is_file() {
+                let size = dest.metadata().map(|m| m.len()).unwrap_or(0);
+                tracing::info!(tag = %e.tag, size = %human_size(size), "already downloaded");
+                return false;
+            }
+            true
+        })
+        .collect();
+    if pending.is_empty() {
+        println!("everything requested is already downloaded");
+        return Ok(());
     }
-    println!("done. build with: kc-process build <tag>...");
+
+    let jobs = jobs.clamp(1, MAX_DOWNLOAD_JOBS).min(pending.len());
+    tracing::info!(count = pending.len(), jobs, "downloading");
+
+    // A fixed pool of worker threads pulls dumps off a shared cursor; each
+    // in-flight download owns one bar in the MultiProgress.
+    let progress = MultiProgress::new();
+    let next = AtomicUsize::new(0);
+    let failed = Mutex::new(Vec::<String>::new());
+    std::thread::scope(|scope| {
+        for _ in 0..jobs {
+            scope.spawn(|| loop {
+                let i = next.fetch_add(1, Ordering::Relaxed);
+                let Some(e) = pending.get(i) else { break };
+                let dest = cfg.download_path(&e.filename);
+                match download(&e.url, &dest, &progress) {
+                    Ok(()) => {
+                        let size = dest.metadata().map(|m| m.len()).unwrap_or(0);
+                        let _ = progress.println(format!("{} saved ({})", e.tag, human_size(size)));
+                    }
+                    Err(err) => {
+                        let _ = progress.println(format!("{} failed: {err:#}", e.tag));
+                        failed.lock().unwrap().push(e.tag.clone());
+                    }
+                }
+            });
+        }
+    });
+
+    let failed = failed.into_inner().unwrap();
+    if !failed.is_empty() {
+        bail!(
+            "{} of {} downloads failed ({}) — rerun `kc-process get` to retry",
+            failed.len(),
+            pending.len(),
+            failed.join(", ")
+        );
+    }
+    println!("done. build with: kc-process build");
     Ok(())
 }
 
 /// Stream `url` to `dest` via a `.part` file (renamed on success), showing a
 /// byte progress bar driven by the response's Content-Length when available.
-fn download(url: &str, dest: &Path) -> Result<()> {
+fn download(url: &str, dest: &Path, progress: &MultiProgress) -> Result<()> {
     let resp = ureq::get(url).call().context("HTTP request failed")?;
     let total: u64 = resp
         .header("Content-Length")
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
 
-    let pb = ProgressBar::new(total);
+    let pb = progress.add(ProgressBar::new(total));
     pb.set_style(
         ProgressStyle::with_template(
             "{prefix} [{bar:30}] {bytes}/{total_bytes} ({bytes_per_sec}, eta {eta})",
@@ -181,18 +230,21 @@ fn download(url: &str, dest: &Path) -> Result<()> {
     pb.set_prefix(dest.file_name().and_then(|f| f.to_str()).unwrap_or("download").to_string());
 
     let part = dest.with_extension("part");
-    {
+    let result = (|| {
         let mut reader = pb.wrap_read(resp.into_reader());
         let mut out = File::create(&part)
             .with_context(|| format!("creating {}", part.display()))?;
         io::copy(&mut reader, &mut out).context("writing download")?;
         out.flush().ok();
-    }
+        std::fs::rename(&part, dest)
+            .with_context(|| format!("moving {} into place", part.display()))
+    })();
     pb.finish_and_clear();
-
-    std::fs::rename(&part, dest)
-        .with_context(|| format!("moving {} into place", part.display()))?;
-    Ok(())
+    progress.remove(&pb);
+    if result.is_err() {
+        std::fs::remove_file(&part).ok();
+    }
+    result
 }
 
 fn human_size(bytes: u64) -> String {

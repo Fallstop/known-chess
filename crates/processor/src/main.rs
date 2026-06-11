@@ -41,9 +41,14 @@ enum Command {
 
     /// Download dumps for one or more month tags (e.g. 2026-05, 2025, latest).
     Get {
-        /// Month tags to download.
+        /// Month tags to download. A bare year (e.g. 2014) selects all of its
+        /// months.
         #[arg(required = true)]
         tags: Vec<String>,
+
+        /// How many dumps to download in parallel (max 5).
+        #[arg(short, long, default_value_t = 5, value_parser = clap::value_parser!(u8).range(1..=5))]
+        jobs: u8,
     },
 
     /// Fold dump(s) into the combined book. With no targets, processes every
@@ -88,7 +93,7 @@ fn main() -> Result<()> {
 
     match cli.command {
         Command::List { query } => fetch::cmd_list(&cfg, query.as_deref()),
-        Command::Get { tags } => fetch::cmd_get(&cfg, &tags),
+        Command::Get { tags, jobs } => fetch::cmd_get(&cfg, &tags, jobs as usize),
         Command::Build {
             targets,
             max_ply,

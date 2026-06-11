@@ -30,6 +30,12 @@
 
 	let fen = $state(START);
 	let known = $state<KnownMove[]>([]);
+	/**
+	 * The last set of real choices, kept through the brief lookup after a move
+	 * so the continuations list doesn't unmount/remount (and shove the layout
+	 * around) on every ply. Cleared when a forced line or the end takes over.
+	 */
+	let lastChoices = $state<KnownMove[]>([]);
 	let total = $state(0);
 	let phase = $state<Phase>('loading');
 	let errorMsg = $state('');
@@ -92,6 +98,7 @@
 		if (pos.isGameOver()) {
 			phase = 'over';
 			known = [];
+			lastChoices = [];
 			// The hero counter lands on the games that ended exactly here.
 			if (lastEntry) total = lastEntry.count;
 			if (sound) endSound(pos.isCheckmate());
@@ -112,18 +119,21 @@
 		total = resp.total;
 
 		if (known.length === 0) {
+			lastChoices = [];
 			phase = 'dry';
 			return;
 		}
 		if (known.length === 1) {
 			// Locked in: every remaining game continued the same way, so the
 			// archive plays the move itself after a beat.
+			lastChoices = [];
 			phase = 'forced';
 			await delay(800);
 			if (g !== gen) return;
 			applyMove(known[0], true);
 			return step(g);
 		}
+		lastChoices = known;
 		phase = 'choose';
 	}
 
@@ -163,6 +173,7 @@
 		fen = START;
 		history = [];
 		known = [];
+		lastChoices = [];
 		total = 0;
 		previewUci = null;
 		phase = 'loading';
@@ -293,6 +304,7 @@
 					{lastMove}
 					{checkSquare}
 					{previewUci}
+					dimInactive={phase === 'loading' || phase === 'forced'}
 					onMove={onBoardMove}
 				/>
 				{#if phase === 'over' && result}
@@ -356,9 +368,9 @@
 				{/if}
 			</div>
 
-			{#if phase === 'choose'}
-				<ol class="paths">
-					{#each known as mv (mv.uci)}
+			{#if (phase === 'choose' || phase === 'loading') && lastChoices.length > 0}
+				<ol class="paths" class:stale={phase === 'loading'}>
+					{#each lastChoices as mv (mv.uci)}
 						<li>
 							<button
 								class="path"
@@ -369,7 +381,7 @@
 								onblur={() => (previewUci = null)}
 							>
 								<span class="psan">{mv.san}</span>
-								<span class="pbar"><span style="width:{(mv.count / known[0].count) * 100}%"></span></span>
+								<span class="pbar"><span style="width:{(mv.count / lastChoices[0].count) * 100}%"></span></span>
 								<span class="pcount">{fmtCompact(mv.count)}</span>
 								<span class="ppct">{total ? (mv.count / total >= 0.01 ? Math.round((mv.count / total) * 100) + '%' : '<1%') : ''}</span>
 							</button>
@@ -716,7 +728,10 @@
 		border-radius: 10px;
 		display: flex;
 		flex-direction: column;
+		justify-content: center;
 		gap: 0.15rem;
+		/* room for two lines in every phase, so one-liners don't shrink the box */
+		min-height: 3.3rem;
 		transition: border-color 0.3s;
 	}
 	.state.forced {
@@ -765,6 +780,12 @@
 		scrollbar-width: thin;
 		scrollbar-color: var(--panel-edge) transparent;
 	}
+	.paths.stale {
+		pointer-events: none;
+	}
+	.paths.stale .path {
+		opacity: 0.55;
+	}
 	.path {
 		width: 100%;
 		display: grid;
@@ -779,7 +800,7 @@
 		cursor: pointer;
 		font: inherit;
 		text-align: left;
-		transition: border-color 0.15s, background 0.15s, transform 0.15s;
+		transition: border-color 0.15s, background 0.15s, transform 0.15s, opacity 0.15s;
 	}
 	.path:hover,
 	.path:focus-visible {
