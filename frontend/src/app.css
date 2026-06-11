@@ -1,0 +1,81 @@
+/* Theme tokens and page-wide chrome shared by every component. */
+
+:root {
+	--bg: #0f1613;
+	--panel: #151e19;
+	--panel-edge: #25322b;
+	--ink: #ece5d3;
+	--ink-dim: #9aa394;
+	--ink-faint: #5d685f;
+	--brass: #c9a04e;
+	--brass-bright: #e8c87c;
+	--brass-soft: rgba(201, 160, 78, 0.45);
+	--brass-tint: rgba(201, 160, 78, 0.14);
+	--brass-tint-strong: rgba(201, 160, 78, 0.32);
+	--brass-glow: rgba(232, 200, 124, 0.5);
+	--sq-light: #e6d7b4;
+	--sq-dark: #8a6246;
+	--serif: 'Fraunces Variable', Georgia, 'Times New Roman', serif;
+	--mono: 'IBM Plex Mono', ui-monospace, 'Cascadia Mono', monospace;
+}
+
+body {
+	margin: 0;
+	background:
+		radial-gradient(1100px 700px at 75% -10%, #1b2922 0%, transparent 60%),
+		radial-gradient(900px 600px at -10% 110%, #141f18 0%, transparent 55%),
+		var(--bg);
+	color: var(--ink);
+	font-family: var(--serif);
+	font-optical-sizing: auto;
+	-webkit-font-smoothing: antialiased;
+}
+
+/* film grain */
+body::after {
+	content: '';
+	position: fixed;
+	inset: 0;
+	pointer-events: none;
+	z-index: 100;
+	opacity: 0.05;
+	background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* ——— pill buttons (controls row, veil actions) ——— */
+.ctl {
+	font-family: var(--mono);
+	font-size: 0.72rem;
+	font-weight: 500;
+	letter-spacing: 0.12em;
+	text-transform: uppercase;
+	color: var(--ink-dim);
+	background: none;
+	border: 1px solid var(--panel-edge);
+	border-radius: 999px;
+	padding: 0.45rem 1rem;
+	cursor: pointer;
+	transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+.ctl:hover:not(:disabled) {
+	color: var(--brass-bright);
+	border-color: var(--brass-soft);
+}
+.ctl:disabled {
+	opacity: 0.35;
+	cursor: default;
+}
+.ctl.off {
+	text-decoration: line-through;
+}
+.ctl.primary {
+	color: #14110a;
+	background: var(--brass);
+	border-color: var(--brass);
+	font-weight: 600;
+}
+.ctl.primary:hover {
+	background: var(--brass-bright);
+	border-color: var(--brass-bright);
+	color: #14110a;
+}

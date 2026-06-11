@@ -474,10 +474,10 @@
 		transition: opacity 0.25s ease;
 	}
 	.sq.movable::after {
-		opacity: 0.6;
+		opacity: 0.85;
 	}
 	.sq.dark.movable::after {
-		opacity: 0.75;
+		opacity: 0.95;
 	}
 	.sq.hot::after {
 		opacity: 1;
@@ -539,8 +539,8 @@
 	}
 	/* pieces with no known move step back so the playable ones read instantly */
 	.piece.recede img {
-		opacity: 0.72;
-		filter: drop-shadow(0 2px 2px rgba(20, 12, 5, 0.4)) saturate(0.8) brightness(0.92);
+		opacity: 0.45;
+		filter: drop-shadow(0 1px 1px rgba(20, 12, 5, 0.25)) saturate(0.25) brightness(0.85);
 	}
 	.piece.dragged {
 		transition: none;
@@ -588,19 +588,24 @@
 		justify-content: center;
 	}
 	.mark .dot {
-		width: 30%;
-		height: 30%;
+		width: 34%;
+		height: 34%;
 		border-radius: 50%;
-		background: rgba(15, 12, 6, 0.28);
-		box-shadow: inset 0 0 0 2px var(--brass-soft);
+		background: var(--brass);
+		box-shadow:
+			inset 0 0 0 2px rgba(15, 12, 6, 0.25),
+			0 0 0 2px rgba(15, 12, 6, 0.3),
+			0 0 10px var(--brass-glow);
 	}
 	.mark.ring::before {
 		content: '';
 		position: absolute;
 		inset: 3%;
 		border-radius: 50%;
-		border: 3px solid var(--brass);
-		opacity: 0.85;
+		border: 3.5px solid var(--brass-bright);
+		box-shadow:
+			0 0 0 1.5px rgba(15, 12, 6, 0.35),
+			inset 0 0 0 1.5px rgba(15, 12, 6, 0.35);
 	}
 	.badge {
 		position: absolute;
