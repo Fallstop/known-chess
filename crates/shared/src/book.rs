@@ -9,8 +9,8 @@
 //!
 //! * Entries are sorted by hash, so instead of raw 8-byte keys we store the
 //!   *gaps* between consecutive hashes, Golomb-Rice coded. For n uniform
-//!   64-bit keys a gap costs ~(64 − log₂ n) + 2 bits — near the
-//!   information-theoretic floor for storing an n-element set — instead of 64.
+//!   64-bit keys a gap costs ~(64 − log₂ n) + 2 bits, near the
+//!   information-theoretic floor for storing an n-element set, instead of 64.
 //! * A move is an 8-bit index into the position's legal moves sorted by their
 //!   [`crate::EncodedMove`] packing (see [`crate::canonical_legal`]). Chess
 //!   positions never have more than 218 legal moves, and every consumer holds
@@ -46,7 +46,7 @@
 //! Lookup binary-searches the block index and decodes at most one 256-entry
 //! block, so the server still answers straight out of an `mmap`. Incremental
 //! builds use [`write_merged`] to stream-merge the existing book with new
-//! sorted entries — the old book is never loaded back into memory, which keeps
+//! sorted entries. The old book is never loaded back into memory, which keeps
 //! fold RAM proportional to the *new* month, not the whole history.
 
 use std::collections::HashMap;
@@ -446,15 +446,35 @@ pub fn write_merged<B: AsRef<[u8]>, W: Write>(
     write_merged_many(old, std::slice::from_ref(new), out)
 }
 
-/// Stream-merge an existing book (if any) with any number of sorted runs —
-/// typically one per worker thread — writing a complete new book to `out`.
+/// Stream-merge an existing book (if any) with any number of sorted runs
+/// (typically one per worker thread), writing a complete new book to `out`.
 /// Move counts for positions present in several inputs are summed. No input is
 /// held in memory beyond one entry at a time, and the run count stays small,
 /// so heads are scanned linearly rather than through a heap.
 pub fn write_merged_many<B: AsRef<[u8]>, W: Write>(
     old: Option<&Book<B>>,
     runs: &[SortedEntries],
+    out: W,
+) -> io::Result<WriteStats> {
+    write_merged_many_progress(old, runs, out, |_| {})
+}
+
+/// How often [`write_merged_many_progress`] reports: every 65 536 positions
+/// emitted. Coarse enough that the callback is noise in the merge loop, fine
+/// enough to keep a progress bar moving.
+const PROGRESS_INTERVAL: u64 = 1 << 16;
+
+/// Like [`write_merged_many`], but calls `progress` with the running count of
+/// positions emitted, every [`PROGRESS_INTERVAL`] positions and once at the
+/// end. Lets a caller drive a progress bar without paying a callback per
+/// position. The merge total is bounded above by `old.position_count()` plus
+/// the run lengths (positions shared across inputs collapse into one), so a
+/// bar sized to that estimate only ever fills early, never overruns.
+pub fn write_merged_many_progress<B: AsRef<[u8]>, W: Write>(
+    old: Option<&Book<B>>,
+    runs: &[SortedEntries],
     mut out: W,
+    mut progress: impl FnMut(u64),
 ) -> io::Result<WriteStats> {
     let estimate = old.map_or(0, |b| b.position_count())
         + runs.iter().map(|r| r.0.len() as u64).sum::<u64>();
@@ -467,6 +487,7 @@ pub fn write_merged_many<B: AsRef<[u8]>, W: Write>(
     sources.extend(runs.iter().map(|r| MergeSource::Run(r.0.iter().peekable())));
 
     let mut moves: Vec<(u8, u64)> = Vec::new();
+    let mut written: u64 = 0;
     loop {
         let Some(min) = sources.iter_mut().filter_map(|s| s.peek_hash()).min() else {
             break;
@@ -479,7 +500,12 @@ pub fn write_merged_many<B: AsRef<[u8]>, W: Write>(
         }
         combine_moves(&mut moves);
         writer.push(min, &moves);
+        written += 1;
+        if written % PROGRESS_INTERVAL == 0 {
+            progress(written);
+        }
     }
+    progress(written);
     writer.finish(&mut out)
 }
 
@@ -490,7 +516,7 @@ pub fn write_merged_many<B: AsRef<[u8]>, W: Write>(
 /// A read-only view over a serialized book.
 ///
 /// Borrows the backing bytes (typically an `mmap`), so construction is just
-/// header validation — no parsing or allocation.
+/// header validation, no parsing or allocation.
 pub struct Book<B: AsRef<[u8]>> {
     bytes: B,
     count: u64,
@@ -817,7 +843,7 @@ mod tests {
         let base = Book::open(base.as_slice()).unwrap();
 
         // Four worker runs that interleave over the full range and all touch
-        // hashes[0] — as parallel workers sharing opening positions would.
+        // hashes[0], as parallel workers sharing opening positions would.
         let runs: Vec<SortedEntries> = (0..4)
             .map(|w| {
                 let mut b = BookBuilder::new();

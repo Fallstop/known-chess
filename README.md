@@ -1,12 +1,12 @@
-# known-chess
+# Precedent Chess
 
-Chess, but **you can only play moves that have actually been played in real
-lichess games.**
+Chess, but **every move needs a precedent: you can only play a move that has
+actually been played in a real lichess game.**
 
 Every position you reach is looked up in a "book" built from a lichess game
 dump. You may only choose among the moves that real games played from that
 position. As the game goes on, the set of games still matching your line shrinks.
-Once a single game remains, there is only ever one legal move — so the line
+Once a single game remains, there is only ever one legal move, so the line
 **plays itself out to the end**, and you either win, lose, or draw.
 
 Only games that ended in **checkmate or stalemate** are included, so every line
@@ -17,7 +17,7 @@ resignation or a flag-fall.
 
 A chess position is identified by its 64-bit **Zobrist hash**. The book is a
 flat, sorted table of `hash → [(move, game-count)]`, so a lookup is a single
-binary search with no parsing or allocation — the server `mmap`s the file and
+binary search with no parsing or allocation. The server `mmap`s the file and
 answers straight out of the page cache. Transpositions (the same position
 reached by different move orders) collapse onto the same hash automatically.
 
@@ -26,14 +26,14 @@ reached by different move orders) collapse onto the same hash automatically.
    (raw games)        (Rust tool)    (shared fmt)  (Rust/axum)   (SvelteKit)
 ```
 
-* **`crates/shared`** — the contract both Rust binaries share: Zobrist hashing,
+* **`crates/shared`**: the contract both Rust binaries share, Zobrist hashing,
   the 16-bit move encoding, and the binary book format (reader + writer).
-* **`crates/processor`** (`kc-process`) — downloads lichess dumps, lists what's
+* **`crates/processor`** (`kc-process`): downloads lichess dumps, lists what's
   available/downloaded/processed, and folds each dump's `position → move` counts
   (for games ending in mate/stalemate) into one combined book.
-* **`crates/server`** (`kc-server`) — `mmap`s the book and serves move lookups
+* **`crates/server`** (`kc-server`): `mmap`s the book and serves move lookups
   over HTTP. Dockerised.
-* **`frontend`** — a SvelteKit app. It runs a full chess engine in the browser
+* **`frontend`**: a SvelteKit app. It runs a full chess engine in the browser
   (`chess.js`), and for each position asks the server which moves are allowed.
   Forced (single-move) lines and the opponent's replies auto-play.
 
@@ -64,7 +64,7 @@ Almost every entry is a position seen once with one move, and the format prices
 it accordingly: sorted-hash gaps cost ~(64 − log₂ n) + 2 bits instead of 64, a
 move is an 8-bit index into the position's canonically-ordered legal moves
 (every consumer holds the live position, and chess never exceeds 218 legal
-moves), and a count of 1 is a single gamma bit — about 6 bytes per position
+moves), and a count of 1 is a single gamma bit, about 6 bytes per position
 where the v1 table spent 22. Lookups binary-search the block index and decode
 one block straight out of the `mmap`; incremental builds stream-merge the
 existing book with each new month's sorted tallies instead of loading it back
@@ -72,7 +72,7 @@ into memory.
 
 ## Quickstart
 
-Storage locations live in **`config.toml`** at the repo root — where dumps are
+Storage locations live in **`config.toml`** at the repo root: where dumps are
 downloaded, the combined book they're merged into, and the server's bind
 address. Both binaries discover it automatically (an explicit `--config`, the
 `KC_CONFIG` env var, or the nearest `config.toml` walking up from the cwd).
@@ -115,7 +115,7 @@ Useful `build` flags: `--limit N` (stop after N qualifying games per dump),
 
 ### 2. Run the server
 
-The server reads the combined book named in `config.toml` — no path argument:
+The server reads the combined book named in `config.toml`, with no path argument:
 
 ```sh
 cargo run --release --bin kc-server
@@ -146,7 +146,7 @@ npm run dev      # → http://localhost:5173, /api proxied to :8080
 
 A single image (root `Dockerfile`) runs both the Rust API and the SvelteKit
 frontend; the frontend is the only exposed port and proxies `/api` to the API
-internally (see `frontend/src/hooks.server.ts`). The book is **not** baked in —
+internally (see `frontend/src/hooks.server.ts`). The book is **not** baked in;
 mount it and point `KC_BOOK_PATH` at it.
 
 ```sh
@@ -174,7 +174,7 @@ missing at `KC_BOOK_PATH`.
 
 ## API
 
-`POST /api/lookup` — body `{ "fen": "<position>" }`
+`POST /api/lookup`, body `{ "fen": "<position>" }`
 
 ```json
 {
@@ -187,10 +187,10 @@ missing at `KC_BOOK_PATH`.
 `total` is the number of games that continued from this position. When it
 reaches `1`, there is exactly one known move and the line is forced.
 
-`GET /api/meta` — `{ "positions": <count> }`, the number of distinct positions
+`GET /api/meta`, returns `{ "positions": <count> }`, the number of distinct positions
 in the loaded book.
 
-`GET /health` — returns `ok`.
+`GET /health` returns `ok`.
 
 ## Layout
 

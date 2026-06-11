@@ -181,7 +181,7 @@
 		selected ? (byFrom.get(selected) ?? new Map<string, KnownMove[]>()) : new Map<string, KnownMove[]>()
 	);
 
-	// A new move set means a move was played (or the game reset) — drop stale UI.
+	// A new move set means a move was played (or the game reset), so drop stale UI.
 	$effect(() => {
 		void allowed;
 		selected = null;
@@ -320,7 +320,7 @@
 	const sumCount = (opts: KnownMove[]) => opts.reduce((s, o) => s + o.count, 0);
 </script>
 
-<div class="board" class:locked={!interactive} class:grabbing={drag?.moved} bind:this={boardEl}>
+<div class="board" class:locked={!interactive} class:live={interactive} class:grabbing={drag?.moved} bind:this={boardEl}>
 	<!-- squares -->
 	{#each CELLS as c (c.sq)}
 		<div
@@ -633,13 +633,16 @@
 		cursor: default;
 		-webkit-tap-highlight-color: transparent;
 	}
-	/* Block scroll/zoom gestures only where a drag can start or end. */
 	.hit.grab {
 		cursor: grab;
-		touch-action: none;
 	}
 	.hit.point {
 		cursor: pointer;
+	}
+	/* While it's the player's turn, the whole board owns touch gestures so a
+	   drag on a frozen piece (or a miss) never scrolls the page out from under
+	   the move. When the board is locked, touches pass through to scroll. */
+	.board.live .hit {
 		touch-action: none;
 	}
 	.board.grabbing .hit {

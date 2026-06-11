@@ -1,4 +1,4 @@
-//! `kc-process` — manage lichess dumps and turn them into known-chess books.
+//! `kc-process`: manage lichess dumps and turn them into known-chess books.
 //!
 //! Storage locations come from `config.toml` (see [`shared::config`]); dumps are
 //! downloaded into `[storage].downloads` and books written to `[storage].books`.

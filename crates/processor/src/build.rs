@@ -6,7 +6,7 @@
 //! thread decompresses and splits each dump into batches of whole games, a
 //! pool of worker threads (`--jobs`) replays them into per-thread tallies, and
 //! the sorted runs are k-way stream-merged with the existing (mmap'd) book
-//! into a temp file that replaces it — dumps already baked in are never
+//! into a temp file that replaces it. Dumps already baked in are never
 //! reprocessed and the old book is never loaded into RAM. A progress bar
 //! tracks each (compressed) input. Every dump merged is recorded in the book's
 //! `.sources` manifest so `list` can show it processed.
@@ -22,7 +22,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use memmap2::Mmap;
 use pgn_reader::{BufferedReader, RawHeader, SanPlus, Skip, Visitor};
 use shakmaty::{Chess, Position};
-use shared::{canonical_index, position_hash, write_merged_many, Book, BookBuilder, Config};
+use shared::{canonical_index, position_hash, write_merged_many_progress, Book, BookBuilder, Config};
 
 use crate::fetch;
 
@@ -51,7 +51,7 @@ pub fn run(cfg: &Config, targets: &[String], opts: &BuildOpts) -> Result<()> {
     let inputs = if targets.is_empty() {
         let pending = catch_up_inputs(cfg, &manifest_path, opts.fresh)?;
         if pending.is_empty() {
-            tracing::info!("everything downloaded is already in the book — nothing to do");
+            tracing::info!("everything downloaded is already in the book, nothing to do");
             return Ok(());
         }
         tracing::info!(count = pending.len(), "catch-up: processing downloaded dumps");
@@ -64,7 +64,7 @@ pub fn run(cfg: &Config, targets: &[String], opts: &BuildOpts) -> Result<()> {
     }
 
     // Keep the existing book for a streaming merge (incremental add) unless
-    // --fresh. It stays mmap'd — never loaded back into memory.
+    // --fresh. It stays mmap'd, never loaded back into memory.
     let mut sources: Vec<String> = Vec::new();
     let existing: Option<Book<Mmap>> = if !opts.fresh && output.is_file() {
         tracing::info!(book = %output.display(), "will stream-merge with existing book");
@@ -102,8 +102,14 @@ pub fn run(cfg: &Config, targets: &[String], opts: &BuildOpts) -> Result<()> {
     let mut file = io::BufWriter::new(
         File::create(&tmp).with_context(|| format!("creating {}", tmp.display()))?,
     );
-    let stats = write_merged_many(existing.as_ref(), &runs, &mut file)
-        .with_context(|| format!("writing {}", tmp.display()))?;
+    let estimate = existing.as_ref().map_or(0, |b| b.position_count())
+        + runs.iter().map(|r| r.len() as u64).sum::<u64>();
+    let pb = position_bar(estimate);
+    let stats = write_merged_many_progress(existing.as_ref(), &runs, &mut file, |written| {
+        pb.set_position(written);
+    })
+    .with_context(|| format!("writing {}", tmp.display()))?;
+    pb.finish_and_clear();
     drop(file);
     drop(existing); // unmap before replacing the file underneath
     std::fs::rename(&tmp, &output)
@@ -183,7 +189,7 @@ fn resolve_inputs(cfg: &Config, targets: &[String]) -> Result<Vec<(PathBuf, Stri
         };
         let matches = fetch::match_tag(list, target);
         if matches.is_empty() {
-            tracing::warn!(target, "neither a file nor a known month — skipping");
+            tracing::warn!(target, "neither a file nor a known month, skipping");
             continue;
         }
         for entry in matches {
@@ -193,7 +199,7 @@ fn resolve_inputs(cfg: &Config, targets: &[String]) -> Result<Vec<(PathBuf, Stri
             } else {
                 tracing::warn!(
                     tag = %entry.tag,
-                    "not downloaded yet — run `kc-process get {}`",
+                    "not downloaded yet, run `kc-process get {}`",
                     entry.tag
                 );
             }
@@ -378,6 +384,21 @@ fn byte_bar(total: u64) -> ProgressBar {
     pb
 }
 
+/// Bar for the final streaming merge, counting positions written into the new
+/// book. `total` is the upper-bound estimate from [`write_merged_many_progress`]
+/// (shared positions collapse), so it may finish a touch shy of full.
+fn position_bar(total: u64) -> ProgressBar {
+    let pb = ProgressBar::new(total);
+    pb.set_style(
+        ProgressStyle::with_template(
+            "writing book [{bar:30}] {human_pos}/{human_len} positions (eta {eta})",
+        )
+        .unwrap()
+        .progress_chars("=> "),
+    );
+    pb
+}
+
 fn spinner() -> ProgressBar {
     let pb = ProgressBar::new_spinner();
     pb.set_style(ProgressStyle::with_template("{spinner} {prefix} {bytes} {msg}").unwrap());
@@ -427,8 +448,8 @@ impl Visitor for BookVisitor<'_> {
     }
 
     fn header(&mut self, key: &[u8], value: RawHeader<'_>) {
-        // Skip non-standard variants and games that start from a custom FEN —
-        // our book assumes the standard initial position.
+        // Skip non-standard variants and games that start from a custom FEN.
+        // Our book assumes the standard initial position.
         match key {
             b"FEN" => self.skip_current = true,
             b"Variant" if value.as_bytes() != b"Standard" => self.skip_current = true,

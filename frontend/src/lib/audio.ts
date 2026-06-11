@@ -1,5 +1,5 @@
 /**
- * Synthesized board sounds — no audio assets, just WebAudio.
+ * Synthesized board sounds: no audio assets, just WebAudio.
  *
  * A move is a wooden "tock" (noise click + pitched thud), a capture lands a
  * second, lower knock, autoplayed moves are softer, and the game ends on a

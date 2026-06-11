@@ -12,6 +12,8 @@ services:
       dockerfile: Dockerfile
     environment:
       KC_BOOK_PATH: /data/book.book
+      # Lichess API token for the "watch the original game" link (optional).
+      KC_LICHESS_TOKEN: ${KC_LICHESS_TOKEN:-}
       RUST_LOG: info
     volumes:
       - ./data:/data:ro

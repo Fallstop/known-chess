@@ -21,3 +21,9 @@ list_url = "https://database.lichess.org/standard/list.txt"
 bind = "0.0.0.0:8080"
 # Book to serve. Defaults to [storage].book; set only to serve a different file.
 # book = "/media/fallstop/SCRATCH/Chess/known.book"
+# Lichess API token (https://lichess.org/account/oauth/token, no scopes needed)
+# for /api/identify, which finds the real game behind a played-out line via the
+# opening explorer; it requires auth since 2026-03. Without it the frontend
+# simply never shows a "watch the original game" link. Prefer the
+# KC_LICHESS_TOKEN env var; don't commit a real token here.
+# lichess_token = "lip_..."

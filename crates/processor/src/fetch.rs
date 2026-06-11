@@ -137,7 +137,7 @@ pub fn cmd_get(cfg: &Config, tags: &[String], jobs: usize) -> Result<()> {
     for tag in tags {
         let matches = match_tag(&entries, tag);
         if matches.is_empty() {
-            tracing::warn!(tag, "no month matches — skipping");
+            tracing::warn!(tag, "no month matches, skipping");
         }
         for e in matches {
             if !selected.iter().any(|s| s.tag == e.tag) {
@@ -200,7 +200,7 @@ pub fn cmd_get(cfg: &Config, tags: &[String], jobs: usize) -> Result<()> {
     let failed = failed.into_inner().unwrap();
     if !failed.is_empty() {
         bail!(
-            "{} of {} downloads failed ({}) — rerun `kc-process get` to retry",
+            "{} of {} downloads failed ({}); rerun `kc-process get` to retry",
             failed.len(),
             pending.len(),
             failed.join(", ")

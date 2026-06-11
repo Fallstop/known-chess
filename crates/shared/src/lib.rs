@@ -13,7 +13,10 @@ pub mod config;
 pub mod mv;
 pub mod zobrist;
 
-pub use book::{write_merged, write_merged_many, Book, BookBuilder, MoveStat, SortedEntries, WriteStats};
+pub use book::{
+    write_merged, write_merged_many, write_merged_many_progress, Book, BookBuilder, MoveStat,
+    SortedEntries, WriteStats,
+};
 pub use config::Config;
 pub use mv::{canonical_index, canonical_legal, EncodedMove};
 pub use zobrist::position_hash;

@@ -27,20 +27,21 @@
 </script>
 
 <svelte:head>
-	<title>Known Chess — every move once lived</title>
-	<meta name="description" content="Chess where only moves played in real games are legal. Narrow eight million games down to one." />
+	<title>Precedent Chess: every move once lived</title>
+	<meta name="description" content="Chess where every move needs a precedent. It counts only if it has been played in a real game before. Narrow millions of games down to one." />
 </svelte:head>
 
 <div class="page">
 	<header>
-		<h1>Known<span class="amp">/</span>Chess</h1>
+		<h1>Precedent<span class="amp">/</span>Chess</h1>
 		<p class="lede">
-			A move is legal only if someone, somewhere, actually played it. Every game here is drawn from real
-			Lichess games that ended over the board — and as you play, the archive narrows. When one path
-			remains, history finishes the game for you.
+			In Precedent Chess, a move is legal only if it has precedent. Someone, somewhere, must have
+			played it in a real game. Every game here comes from real Lichess games that ended over the
+			board, and with each move the set of games matching yours gets smaller. When a single game is
+			left, precedent plays it out to the end.
 		</p>
 		{#if archivePositions !== null}
-			<p class="archive-size">{archivePositions.toLocaleString()} positions remembered</p>
+			<p class="archive-size">{archivePositions.toLocaleString()} positions on record</p>
 		{/if}
 	</header>
 
@@ -68,7 +69,7 @@
 			<RemainCounter total={game.total} />
 			<StatePanel {game} />
 			<Continuations {game} />
-			<MoveHistory history={game.history} />
+			<MoveHistory history={game.history} fen={game.fen} />
 
 			<div class="controls">
 				<button class="ctl" onclick={() => game.newGame()}>New game</button>
@@ -149,16 +150,53 @@
 		gap: 2.2rem;
 		align-items: start;
 	}
+	/* ——— tablet & below: stack to one column ——— */
 	@media (max-width: 900px) {
 		main {
 			grid-template-columns: 1fr;
+			gap: 1.6rem;
+			justify-items: center;
+		}
+		.arena,
+		.ledger {
+			width: 100%;
+			max-width: 34rem;
+		}
+		/* Bound the board by viewport height too, so it never runs off the
+		   bottom on short or landscape screens. */
+		.arena {
+			max-width: min(34rem, 82vh);
 		}
 		header {
 			grid-template-columns: 1fr;
 			align-items: start;
+			margin-bottom: 1.8rem;
 		}
 		h1 {
 			grid-row: auto;
+		}
+	}
+
+	/* ——— phones ——— */
+	@media (max-width: 560px) {
+		.page {
+			padding: 1.6rem 1rem 2.2rem;
+		}
+		header {
+			gap: 0.5rem 0;
+			margin-bottom: 1.4rem;
+		}
+		.lede {
+			font-size: 0.92rem;
+		}
+		main {
+			gap: 1.2rem;
+		}
+		.arena {
+			gap: 0.5rem;
+		}
+		footer {
+			margin-top: 1.8rem;
 		}
 	}
 

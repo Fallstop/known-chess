@@ -1,11 +1,11 @@
-//! `kc-server` — serves known-chess move lookups out of an mmap'd book.
+//! `kc-server` serves known-chess move lookups out of an mmap'd book.
 //!
 //! The frontend owns the game state (it has a full chess engine in the
 //! browser). For each position it asks this server "which moves have been played
 //! from here, and how often?" via [`POST /api/lookup`]. The server hashes the
 //! position, binary-searches the book, and returns the legal continuations.
 //!
-//! The book to load comes from `KC_BOOK_PATH` if set (the deployment path —
+//! The book to load comes from `KC_BOOK_PATH` if set (the deployment path,
 //! see the root `Dockerfile`), otherwise from `config.toml` (see
 //! [`shared::config`]): the single combined book at `[storage].book` (or
 //! `[server].book`). When `KC_BOOK_PATH` is set no `config.toml` is required, so
@@ -22,12 +22,21 @@ use memmap2::Mmap;
 use serde::{Deserialize, Serialize};
 use shakmaty::fen::Fen;
 use shakmaty::san::SanPlus;
-use shakmaty::{CastlingMode, Chess};
+use shakmaty::uci::UciMove;
+use shakmaty::{CastlingMode, Chess, EnPassantMode, Position};
 use shared::{canonical_legal, position_hash, Book, Config};
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
 type SharedBook = Arc<Book<Mmap>>;
+
+#[derive(Clone)]
+struct AppState {
+    book: SharedBook,
+    /// Bearer token for explorer.lichess.ovh (it requires authentication).
+    /// `None` disables `/api/identify`: it then always answers `game: null`.
+    lichess_token: Option<Arc<str>>,
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -40,24 +49,32 @@ async fn main() -> Result<()> {
 
     // `KC_BOOK_PATH` (set by the deployment image) points straight at the book
     // and lets the server run with no `config.toml`. Only fall back to loading
-    // config — and only require it to exist — when the env var is absent.
-    let (book_path, cfg_bind) = match std::env::var_os("KC_BOOK_PATH") {
-        Some(p) => (PathBuf::from(p), None),
+    // config (and only require it to exist) when the env var is absent.
+    let (book_path, cfg_bind, cfg_token) = match std::env::var_os("KC_BOOK_PATH") {
+        Some(p) => (PathBuf::from(p), None, None),
         None => {
             let cfg = Config::load(std::env::var_os("KC_CONFIG").map(PathBuf::from).as_deref())?;
-            (cfg.server_book_path(), Some(cfg.server.bind))
+            (cfg.server_book_path(), Some(cfg.server.bind), cfg.server.lichess_token)
         }
     };
     let book =
         open_book(&book_path).with_context(|| format!("opening book {}", book_path.display()))?;
     tracing::info!(positions = book.position_count(), path = %book_path.display(), "book loaded");
-    let book: SharedBook = Arc::new(book);
+
+    let lichess_token: Option<Arc<str>> = std::env::var("KC_LICHESS_TOKEN")
+        .ok()
+        .filter(|t| !t.is_empty())
+        .or(cfg_token)
+        .map(Arc::from);
+    tracing::info!(enabled = lichess_token.is_some(), "lichess game identification");
+    let state = AppState { book: Arc::new(book), lichess_token };
 
     let app = Router::new()
         .route("/health", get(|| async { "ok" }))
         .route("/api/meta", get(meta))
         .route("/api/lookup", post(lookup))
-        .with_state(book)
+        .route("/api/identify", post(identify))
+        .with_state(state)
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http());
 
@@ -95,9 +112,9 @@ struct MetaResponse {
 }
 
 /// Static facts about the loaded book, for the frontend's header.
-async fn meta(State(book): State<SharedBook>) -> Json<MetaResponse> {
+async fn meta(State(state): State<AppState>) -> Json<MetaResponse> {
     Json(MetaResponse {
-        positions: book.position_count(),
+        positions: state.book.position_count(),
     })
 }
 
@@ -125,7 +142,7 @@ struct LookupResponse {
 }
 
 async fn lookup(
-    State(book): State<SharedBook>,
+    State(state): State<AppState>,
     Json(req): Json<LookupRequest>,
 ) -> Result<Json<LookupResponse>, AppError> {
     let fen: Fen = req
@@ -137,7 +154,7 @@ async fn lookup(
         .map_err(|_| AppError::bad_request("illegal position"))?;
 
     let hash = position_hash(&pos);
-    let stats = book.lookup(hash);
+    let stats = state.book.lookup(hash);
 
     // The book stores each move as an index into the canonical legal-move
     // ordering; resolve against the live position to emit both UCI (for the
@@ -163,6 +180,176 @@ async fn lookup(
         total,
         moves,
     }))
+}
+
+/// Deepest position depth (in plies) the lichess opening explorer indexes;
+/// positions after more than this many plies always come back empty.
+const EXPLORER_MAX_PLY: usize = 49;
+
+#[derive(Deserialize)]
+struct IdentifyRequest {
+    /// Every move of the finished game, in order, as UCI.
+    ucis: Vec<String>,
+}
+
+#[derive(Serialize, Clone)]
+struct SourcePlayer {
+    name: String,
+    rating: Option<u32>,
+}
+
+#[derive(Serialize, Clone)]
+struct SourceGame {
+    /// Lichess game id. The game lives at `https://lichess.org/{id}`.
+    id: String,
+    white: SourcePlayer,
+    black: SourcePlayer,
+    /// "white", "black", or null for a draw.
+    winner: Option<String>,
+    speed: Option<String>,
+    /// Month the game was played, e.g. "2012-12".
+    month: Option<String>,
+    /// False when several games shared the line as deep as the explorer
+    /// indexes, so this is the best (result-matching) candidate, not a proof.
+    exact: bool,
+}
+
+#[derive(Serialize)]
+struct IdentifyResponse {
+    game: Option<SourceGame>,
+}
+
+/// Find the real lichess game behind a fully played-out line.
+///
+/// The book stores no game ids, so this asks the lichess opening explorer
+/// instead: replay the line to the deepest position the explorer still indexes
+/// (≤ [`EXPLORER_MAX_PLY`] plies), then ask which games played our next move
+/// from there. Once the line is down to a single game, which is exactly the
+/// situation after a known-chess playout, the explorer attaches the game id to
+/// the move.
+async fn identify(
+    State(state): State<AppState>,
+    Json(req): Json<IdentifyRequest>,
+) -> Result<Json<IdentifyResponse>, AppError> {
+    let Some(token) = state.lichess_token.clone() else {
+        return Ok(Json(IdentifyResponse { game: None }));
+    };
+    if req.ucis.is_empty() || req.ucis.len() > 1024 {
+        return Err(AppError::bad_request("expected 1..=1024 moves"));
+    }
+
+    // Replay to the anchor position: just before the last move, or just before
+    // the deepest move the explorer can still see, whichever comes first.
+    let anchor = (req.ucis.len() - 1).min(EXPLORER_MAX_PLY);
+    let mut pos = Chess::default();
+    for u in &req.ucis[..anchor] {
+        pos = play_uci(pos, u).ok_or_else(|| AppError::bad_request("illegal move in line"))?;
+    }
+    let target = req.ucis[anchor].clone();
+    // The winner according to the played-out line, for tie-breaking when the
+    // explorer has several games matching the anchor move.
+    let winner = line_winner(pos.clone(), &req.ucis[anchor..])
+        .ok_or_else(|| AppError::bad_request("illegal move in line"))?;
+    let fen = Fen::from_position(pos, EnPassantMode::Legal).to_string();
+
+    let resp = tokio::task::spawn_blocking(move || explorer_lookup(&token, &fen))
+        .await
+        .map_err(|_| AppError::bad_request("lookup task failed"))?;
+    let body = match resp {
+        Ok(body) => body,
+        Err(e) => {
+            tracing::warn!(error = %e, "explorer lookup failed");
+            return Ok(Json(IdentifyResponse { game: None }));
+        }
+    };
+
+    Ok(Json(IdentifyResponse {
+        game: match_game(&body, &target, winner.as_deref()),
+    }))
+}
+
+fn play_uci(pos: Chess, uci: &str) -> Option<Chess> {
+    let mv = uci.parse::<UciMove>().ok()?.to_move(&pos).ok()?;
+    pos.play(&mv).ok()
+}
+
+/// Play out the tail of the line and report the winner: `Some(Some("white"))`
+/// / `Some(Some("black"))` for mate, `Some(None)` for a drawn ending, and
+/// `None` if a move is illegal.
+fn line_winner(mut pos: Chess, tail: &[String]) -> Option<Option<String>> {
+    for u in tail {
+        pos = play_uci(pos, u)?;
+    }
+    if pos.is_checkmate() {
+        let winner = if pos.turn().is_white() { "black" } else { "white" };
+        Some(Some(winner.to_string()))
+    } else {
+        Some(None)
+    }
+}
+
+fn explorer_lookup(token: &str, fen: &str) -> Result<serde_json::Value, ureq::Error> {
+    let body = ureq::get("https://explorer.lichess.ovh/lichess")
+        .query("variant", "standard")
+        .query("fen", fen)
+        .query("speeds", "ultraBullet,bullet,blitz,rapid,classical,correspondence")
+        .query("ratings", "400,1000,1200,1400,1600,1800,2000,2200,2500")
+        .query("modes", "rated")
+        .query("recentGames", "15")
+        .set("Authorization", &format!("Bearer {token}"))
+        .timeout(std::time::Duration::from_secs(8))
+        .call()?
+        .into_json()?;
+    Ok(body)
+}
+
+/// Pick the source game out of an explorer response: the move entry matching
+/// `target` carries the game outright when it's unique; otherwise fall back to
+/// the recent/top game samples that played `target`, tie-breaking on result.
+fn match_game(body: &serde_json::Value, target: &str, winner: Option<&str>) -> Option<SourceGame> {
+    let move_entry = body["moves"]
+        .as_array()?
+        .iter()
+        .find(|m| m["uci"].as_str() == Some(target))?;
+    let move_count = ["white", "draws", "black"]
+        .iter()
+        .filter_map(|k| move_entry[k].as_u64())
+        .sum::<u64>();
+    if let Some(game) = parse_game(&move_entry["game"], move_count == 1) {
+        return Some(game);
+    }
+
+    let mut candidates: Vec<SourceGame> = ["recentGames", "topGames"]
+        .iter()
+        .filter_map(|k| body[k].as_array())
+        .flatten()
+        .filter(|g| g["uci"].as_str() == Some(target))
+        .filter_map(|g| parse_game(g, move_count == 1))
+        .collect();
+    // Our game ended in the line's result; a candidate that didn't can't be it.
+    candidates.retain(|g| g.winner.as_deref() == winner);
+    match candidates.len() {
+        1 => candidates.pop(),
+        _ => None,
+    }
+}
+
+fn parse_game(g: &serde_json::Value, exact: bool) -> Option<SourceGame> {
+    let player = |v: &serde_json::Value| -> Option<SourcePlayer> {
+        Some(SourcePlayer {
+            name: v["name"].as_str()?.to_string(),
+            rating: v["rating"].as_u64().map(|r| r as u32),
+        })
+    };
+    Some(SourceGame {
+        id: g["id"].as_str()?.to_string(),
+        white: player(&g["white"])?,
+        black: player(&g["black"])?,
+        winner: g["winner"].as_str().map(str::to_string),
+        speed: g["speed"].as_str().map(str::to_string),
+        month: g["month"].as_str().map(str::to_string),
+        exact,
+    })
 }
 
 struct AppError {

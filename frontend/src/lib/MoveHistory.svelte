@@ -2,7 +2,7 @@
 	import type { HistEntry } from '$lib/game.svelte';
 	import { fmtCompact } from '$lib/format';
 
-	let { history }: { history: HistEntry[] } = $props();
+	let { history, fen }: { history: HistEntry[]; fen: string } = $props();
 
 	const moveRows = $derived.by(() => {
 		const out: { n: number; w?: HistEntry; b?: HistEntry }[] = [];
@@ -18,33 +18,106 @@
 		void history.length;
 		if (el) el.scrollTop = el.scrollHeight;
 	});
+
+	let copied = $state(false);
+	let copyTimer: ReturnType<typeof setTimeout>;
+
+	async function copyFen() {
+		try {
+			await navigator.clipboard.writeText(fen);
+		} catch {
+			// Clipboard API needs a secure context; fall back to a hidden textarea.
+			const ta = document.createElement('textarea');
+			ta.value = fen;
+			ta.style.position = 'fixed';
+			ta.style.opacity = '0';
+			document.body.appendChild(ta);
+			ta.select();
+			try {
+				document.execCommand('copy');
+			} finally {
+				ta.remove();
+			}
+		}
+		copied = true;
+		clearTimeout(copyTimer);
+		copyTimer = setTimeout(() => (copied = false), 1400);
+	}
 </script>
 
-<div class="history" bind:this={el}>
-	{#if history.length === 0}
-		<p class="hist-empty">The opening ledger is blank — make a move.</p>
-	{:else}
-		<table>
-			<tbody>
-				{#each moveRows as row (row.n)}
-					<tr>
-						<td class="hnum">{row.n}.</td>
-						{#each [row.w, row.b] as e, i (i)}
-							<td class="hply" class:auto={e && e.choices <= 1}>
-								{#if e}
-									<span class="hsan">{e.san}</span>
-									<span class="hcount">{fmtCompact(e.count)}</span>
-								{/if}
-							</td>
-						{/each}
-					</tr>
-				{/each}
-			</tbody>
-		</table>
-	{/if}
+<div class="ledger-history">
+	<div class="hist-head">
+		<span class="hist-label">moves</span>
+		<button class="copy-fen" class:done={copied} onclick={copyFen} title="Copy current position as FEN">
+			{copied ? 'Copied ✓' : 'Copy FEN'}
+		</button>
+	</div>
+	<div class="history" bind:this={el}>
+		{#if history.length === 0}
+			<p class="hist-empty">The opening ledger is blank. Make a move.</p>
+		{:else}
+			<table>
+				<tbody>
+					{#each moveRows as row (row.n)}
+						<tr>
+							<td class="hnum">{row.n}.</td>
+							{#each [row.w, row.b] as e, i (i)}
+								<td class="hply" class:auto={e && e.choices <= 1}>
+									{#if e}
+										<span class="hsan">{e.san}</span>
+										<span class="hcount">{fmtCompact(e.count)}</span>
+									{/if}
+								</td>
+							{/each}
+						</tr>
+					{/each}
+				</tbody>
+			</table>
+		{/if}
+	</div>
 </div>
 
 <style>
+	.ledger-history {
+		display: flex;
+		flex-direction: column;
+		gap: 0.4rem;
+	}
+	.hist-head {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 0.6rem;
+	}
+	.hist-label {
+		font-family: var(--mono);
+		font-size: 0.68rem;
+		letter-spacing: 0.18em;
+		text-transform: uppercase;
+		color: var(--ink-dim);
+	}
+	.copy-fen {
+		font-family: var(--mono);
+		font-size: 0.64rem;
+		font-weight: 500;
+		letter-spacing: 0.1em;
+		text-transform: uppercase;
+		color: var(--ink-dim);
+		background: none;
+		border: 1px solid var(--panel-edge);
+		border-radius: 999px;
+		padding: 0.25rem 0.7rem;
+		cursor: pointer;
+		transition: color 0.15s, border-color 0.15s;
+	}
+	.copy-fen:hover {
+		color: var(--brass-bright);
+		border-color: var(--brass-soft);
+	}
+	.copy-fen.done {
+		color: var(--brass-bright);
+		border-color: var(--brass-soft);
+	}
 	.history {
 		background: var(--panel);
 		border: 1px solid var(--panel-edge);

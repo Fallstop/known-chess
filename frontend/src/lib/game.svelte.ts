@@ -1,5 +1,5 @@
 import { Chess } from 'chess.js';
-import { lookup, type KnownMove } from '$lib/api';
+import { identify, lookup, type KnownMove, type SourceGame } from '$lib/api';
 import { moveSound, forcedSound, endSound } from '$lib/audio';
 
 export const START = new Chess().fen();
@@ -8,6 +8,8 @@ export type Phase = 'loading' | 'choose' | 'forced' | 'over' | 'dry' | 'error';
 
 export interface HistEntry {
 	san: string;
+	/** Long algebraic, e.g. "e7e8q", replayed server-side to identify the game. */
+	uci: string;
 	mover: 'w' | 'b';
 	/** Games that played this move from the position it was made in. */
 	count: number;
@@ -49,6 +51,8 @@ export class KnownGame {
 	/** A move (UCI) to spotlight on the board, e.g. while hovering a continuation. */
 	previewUci = $state<string | null>(null);
 	names = $state({ w: '', b: '' });
+	/** The real lichess game a finished line replayed, once identified. */
+	sourceGame = $state<SourceGame | null>(null);
 	/** Bumped on new-game/takeback so in-flight lookups and autoplay timers abort. */
 	private gen = 0;
 
@@ -99,8 +103,8 @@ export class KnownGame {
 			const winner = this.turn === 'w' ? 'b' : 'w';
 			return { title: 'Checkmate.', detail: `${this.name(winner)} wins` };
 		}
-		if (this.chess.isStalemate()) return { title: 'Stalemate.', detail: 'Drawn — no legal reply' };
-		if (this.chess.isInsufficientMaterial()) return { title: 'Dead position.', detail: 'Drawn — bare kings' };
+		if (this.chess.isStalemate()) return { title: 'Stalemate.', detail: 'Drawn, no legal reply' };
+		if (this.chess.isInsufficientMaterial()) return { title: 'Dead position.', detail: 'Drawn, bare kings' };
 		return { title: 'Draw.', detail: 'Game drawn' };
 	});
 
@@ -115,6 +119,7 @@ export class KnownGame {
 			// The hero counter lands on the games that ended exactly here.
 			if (this.lastEntry) this.total = this.lastEntry.count;
 			if (this.sound) endSound(pos.isCheckmate());
+			if (this.history.length) void this.findSource(g);
 			return;
 		}
 		this.phase = 'loading';
@@ -150,6 +155,17 @@ export class KnownGame {
 		this.phase = 'choose';
 	}
 
+	/** Look up which real game the finished line replayed; quietly optional. */
+	private async findSource(g: number): Promise<void> {
+		try {
+			const game = await identify(this.history.map((h) => h.uci));
+			if (g !== this.gen) return;
+			this.sourceGame = game;
+		} catch {
+			// The link is a bonus; the veil works fine without it.
+		}
+	}
+
 	private applyMove(mv: KnownMove, auto = false) {
 		const pos = new Chess(this.fen);
 		const preFen = this.fen;
@@ -160,7 +176,7 @@ export class KnownGame {
 			to: mv.uci.slice(2, 4),
 			promotion: mv.uci.slice(4, 5) || undefined
 		});
-		this.history = [...this.history, { san: res.san, mover, count: mv.count, choices, preFen, from: res.from, to: res.to }];
+		this.history = [...this.history, { san: res.san, uci: mv.uci, mover, count: mv.count, choices, preFen, from: res.from, to: res.to }];
 		this.fen = pos.fen();
 		if (this.sound) {
 			const capture = res.captured !== undefined;
@@ -189,6 +205,7 @@ export class KnownGame {
 		this.lastChoices = [];
 		this.total = 0;
 		this.previewUci = null;
+		this.sourceGame = null;
 		this.phase = 'loading';
 		void this.step(this.gen);
 	}
@@ -203,6 +220,7 @@ export class KnownGame {
 		this.history = h;
 		this.fen = entry.preFen;
 		this.previewUci = null;
+		this.sourceGame = null;
 		void this.step(this.gen);
 	}
 

@@ -4,7 +4,7 @@
 //! downloaded, where the combined book lives, and where to fetch the dump list.
 //! `kc-process` downloads dumps into `[storage].downloads` and folds each one
 //! into the single combined book at `[storage].book`; `kc-server` reads that one
-//! book. Both binaries discover the config the same way — an explicit path, the
+//! book. Both binaries discover the config the same way: an explicit path, the
 //! `KC_CONFIG` env var, or the nearest `config.toml` walking up from the cwd.
 
 use std::path::{Path, PathBuf};
@@ -81,6 +81,11 @@ pub struct Server {
     /// Book to serve. Defaults to `[storage].book` (the combined book).
     #[serde(default)]
     pub book: Option<PathBuf>,
+    /// Lichess API token for the opening-explorer proxy (`/api/identify`).
+    /// The explorer requires authentication; without a token the endpoint
+    /// always answers "unknown". Overridable with `KC_LICHESS_TOKEN`.
+    #[serde(default)]
+    pub lichess_token: Option<String>,
 }
 
 impl Default for Server {
@@ -88,6 +93,7 @@ impl Default for Server {
         Self {
             bind: default_bind(),
             book: None,
+            lichess_token: None,
         }
     }
 }

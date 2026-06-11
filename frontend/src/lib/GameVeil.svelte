@@ -1,8 +1,12 @@
 <script lang="ts">
+	import type { SourcePlayer } from '$lib/api';
+	import { fmtMonth } from '$lib/format';
 	import type { KnownGame } from '$lib/game.svelte';
 
 	/** Overlay covering the board when the game is over, off the record, or errored. */
 	let { game }: { game: KnownGame } = $props();
+
+	const plate = (p: SourcePlayer) => (p.rating ? `${p.name} (${p.rating})` : p.name);
 </script>
 
 {#if game.phase === 'over' && game.result}
@@ -15,12 +19,25 @@
 				{game.lastEntry.count === 1 ? 'game' : 'games'} ended exactly here.
 			</p>
 		{/if}
+		{#if game.sourceGame}
+			{@const src = game.sourceGame}
+			<a
+				class="veil-source"
+				href="https://lichess.org/{src.id}#{game.history.length}"
+				target="_blank"
+				rel="noopener"
+			>
+				{src.exact ? 'You replayed' : 'Closest match:'}
+				{plate(src.white)} vs {plate(src.black)}{src.month ? `, ${fmtMonth(src.month)}` : ''}
+				(watch it ↗)
+			</a>
+		{/if}
 		<button class="ctl primary" onclick={() => game.newGame()}>Play again</button>
 	</div>
 {:else if game.phase === 'dry'}
 	<div class="veil">
-		<p class="veil-title">The archive runs dry.</p>
-		<p class="veil-note">No recorded game continued from this position.</p>
+		<p class="veil-title">Precedent runs out.</p>
+		<p class="veil-note">No recorded game ever continued from this position.</p>
 		<button class="ctl primary" onclick={() => game.newGame()}>Play again</button>
 	</div>
 {:else if game.phase === 'error'}
@@ -73,5 +90,15 @@
 		color: var(--ink-dim);
 		font-size: 0.92rem;
 		max-width: 34ch;
+	}
+	.veil-source {
+		margin: -0.4rem 0 0.8rem;
+		color: var(--brass-bright);
+		font-size: 0.92rem;
+		max-width: 40ch;
+		text-decoration: none;
+	}
+	.veil-source:hover {
+		text-decoration: underline;
 	}
 </style>

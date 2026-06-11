@@ -7,8 +7,8 @@
 //!
 //! We deliberately do *not* encode castling/en-passant flags. The consumer
 //! always has the full position in hand, so an [`EncodedMove`] is resolved back
-//! to a concrete [`Move`] by matching it against the position's legal moves —
-//! that side-steps every special-case encoding wrinkle.
+//! to a concrete [`Move`] by matching it against the position's legal moves,
+//! which side-steps every special-case encoding wrinkle.
 
 use shakmaty::{Move, Position, Role, Square};
 
@@ -49,8 +49,8 @@ impl EncodedMove {
 /// All legal moves of `pos`, sorted ascending by their [`EncodedMove`] packing.
 ///
 /// This is the canonical ordering the book's 8-bit move indexes refer to. It
-/// depends only on the `EncodedMove` bit layout — never on shakmaty's move
-/// generation order — so indexes stay stable across shakmaty upgrades. Chess
+/// depends only on the `EncodedMove` bit layout, never on shakmaty's move
+/// generation order, so indexes stay stable across shakmaty upgrades. Chess
 /// positions have at most 218 legal moves, so an index always fits in a `u8`.
 pub fn canonical_legal<P: Position>(pos: &P) -> Vec<Move> {
     let mut moves: Vec<(u16, Move)> = pos
