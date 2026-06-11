@@ -1,0 +1,19 @@
+[package]
+name = "processor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "kc-process"
+path = "src/main.rs"
+
+[dependencies]
+shared.workspace = true
+shakmaty.workspace = true
+pgn-reader.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+clap = { version = "4", features = ["derive"] }
+zstd = "0.13"

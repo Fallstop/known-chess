@@ -1,0 +1,30 @@
+# Brings up the Rust server (serving a prebuilt book) and the frontend.
+#
+# Before running, generate a book into ./data/book.book with:
+#   cargo run --release --bin kc-process -- --input <lichess.pgn.zst> --output data/book.book
+
+services:
+  server:
+    build:
+      context: .
+      dockerfile: crates/server/Dockerfile
+    environment:
+      KC_BOOK_PATH: /data/book.book
+      KC_BIND: 0.0.0.0:8080
+      RUST_LOG: info
+    volumes:
+      - ./data:/data:ro
+    ports:
+      - "8080:8080"
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    environment:
+      # The Node adapter serves SSR; in production point this at the server.
+      KC_SERVER_URL: http://server:8080
+    ports:
+      - "3000:3000"
+    depends_on:
+      - server

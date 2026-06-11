@@ -1,0 +1,20 @@
+# Configuration for scripts/lichess-db.py — the lichess database fetcher.
+
+[storage]
+# Where downloaded .pgn.zst dumps live.
+downloads = "/media/fallstop/SCRATCH/Chess"
+# Where kc-process writes its .book output. A month counts as "processed"
+# when a matching .book file exists here. Defaults to <downloads>/books.
+processed = "/media/fallstop/SCRATCH/Chess/books"
+
+[source]
+# The canonical list of available standard-rated monthly dumps.
+list_url = "https://database.lichess.org/standard/list.txt"
+
+[process]
+# How to invoke kc-process. Leave unset to use `kc-process` from PATH if it's
+# installed, otherwise `cargo run --release -p processor --`. Override with a
+# string (split on spaces) or a list, e.g.
+#   command = "kc-process"
+#   command = ["cargo", "run", "--release", "-p", "processor", "--"]
+

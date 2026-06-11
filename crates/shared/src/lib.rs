@@ -1,0 +1,17 @@
+//! Shared types for known-chess.
+//!
+//! This crate defines the data that flows between the `processor` (which turns
+//! a lichess PGN dump into a position book) and the `server` (which serves that
+//! book to the frontend). Both sides agree on:
+//!
+//! * how a position is hashed ([`zobrist`]),
+//! * how a move is packed into 16 bits ([`mv`]),
+//! * and the on-disk book format ([`book`]).
+
+pub mod book;
+pub mod mv;
+pub mod zobrist;
+
+pub use book::{Book, BookBuilder, MoveStat};
+pub use mv::EncodedMove;
+pub use zobrist::position_hash;

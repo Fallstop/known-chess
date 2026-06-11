@@ -1,0 +1,25 @@
+# Rust
+/target
+**/*.rs.bk
+
+# Node / SvelteKit
+node_modules
+/frontend/.svelte-kit
+/frontend/build
+/frontend/.vercel
+/frontend/.output
+.env
+.env.*
+!.env.example
+
+# Data: raw lichess dumps and generated book files are large — keep them out of git.
+/data/*
+!/data/.gitkeep
+*.pgn
+*.pgn.zst
+*.book
+
+# Editor / OS
+.DS_Store
+*.swp
+.idea/
