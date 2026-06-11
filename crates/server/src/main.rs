@@ -4,8 +4,13 @@
 //! browser). For each position it asks this server "which moves have been played
 //! from here, and how often?" via [`POST /api/lookup`]. The server hashes the
 //! position, binary-searches the book, and returns the legal continuations.
+//!
+//! The book to load comes from `config.toml` (see [`shared::config`]): the
+//! single combined book at `[storage].book` (or `[server].book`). The bind
+//! address comes from `[server].bind`, overridable with `KC_BIND`.
 
 use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -15,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use shakmaty::fen::Fen;
 use shakmaty::san::SanPlus;
 use shakmaty::{CastlingMode, Chess};
-use shared::{position_hash, Book};
+use shared::{position_hash, Book, Config};
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
@@ -30,10 +35,11 @@ async fn main() -> Result<()> {
         )
         .init();
 
-    let book_path = std::env::var("KC_BOOK_PATH").unwrap_or_else(|_| "data/book.book".into());
-    let book = open_book(&book_path)
-        .with_context(|| format!("opening book at {book_path}"))?;
-    tracing::info!(positions = book.position_count(), path = %book_path, "book loaded");
+    let cfg = Config::load(std::env::var_os("KC_CONFIG").map(PathBuf::from).as_deref())?;
+    let book_path = cfg.server_book_path();
+    let book =
+        open_book(&book_path).with_context(|| format!("opening book {}", book_path.display()))?;
+    tracing::info!(positions = book.position_count(), path = %book_path.display(), "book loaded");
     let book: SharedBook = Arc::new(book);
 
     let app = Router::new()
@@ -44,10 +50,9 @@ async fn main() -> Result<()> {
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http());
 
-    let addr: SocketAddr = std::env::var("KC_BIND")
-        .unwrap_or_else(|_| "0.0.0.0:8080".into())
-        .parse()
-        .context("parsing KC_BIND")?;
+    // KC_BIND overrides the configured address, e.g. for local dev.
+    let bind = std::env::var("KC_BIND").unwrap_or(cfg.server.bind);
+    let addr: SocketAddr = bind.parse().with_context(|| format!("parsing bind address {bind:?}"))?;
     tracing::info!(%addr, "listening");
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -57,7 +62,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn open_book(path: &str) -> Result<Book<Mmap>> {
+fn open_book(path: &Path) -> Result<Book<Mmap>> {
     let file = std::fs::File::open(path)?;
     // SAFETY: the book file is read-only and not mutated while mapped.
     let mmap = unsafe { Mmap::map(&file)? };

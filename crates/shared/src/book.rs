@@ -56,12 +56,30 @@ impl BookBuilder {
 
     /// Record that `mv` was played from the position with the given `hash`.
     pub fn record(&mut self, hash: u64, mv: EncodedMove) {
+        self.record_n(hash, mv, 1);
+    }
+
+    /// Record that `mv` was played `count` times from `hash`. Used when folding
+    /// an already-aggregated source (another book) into this builder.
+    pub fn record_n(&mut self, hash: u64, mv: EncodedMove, count: u64) {
         *self
             .positions
             .entry(hash)
             .or_default()
             .entry(mv.0)
-            .or_insert(0) += 1;
+            .or_insert(0) += count;
+    }
+
+    /// Fold an existing book into this builder, summing move counts. This lets
+    /// `build` add a new dump to a combined book without reprocessing the dumps
+    /// already baked into it.
+    pub fn absorb<B: AsRef<[u8]>>(&mut self, book: &Book<B>) {
+        for idx in 0..book.position_count() {
+            let (hash, moves) = book.entry(idx);
+            for stat in moves {
+                self.record_n(hash, stat.mv, stat.count as u64);
+            }
+        }
     }
 
     pub fn position_count(&self) -> usize {
@@ -145,6 +163,12 @@ impl<B: AsRef<[u8]>> Book<B> {
 
     pub fn position_count(&self) -> usize {
         self.count
+    }
+
+    /// The `idx`th entry as `(hash, moves)`, in stored (hash-ascending) order.
+    /// Used by [`BookBuilder::absorb`] to fold one book into another.
+    pub fn entry(&self, idx: usize) -> (u64, Vec<MoveStat>) {
+        (self.entry_hash(idx), self.read_moves(idx))
     }
 
     /// Look up the moves played from `hash`. Returns an empty vec for an unknown

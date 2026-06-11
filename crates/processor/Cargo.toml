@@ -17,3 +17,9 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 clap = { version = "4", features = ["derive"] }
 zstd = "0.13"
+# HTTP client for fetching the dump list and downloading dumps.
+ureq = "2"
+# Progress bars for downloads and PGN processing.
+indicatif = "0.17"
+# Reading the existing combined book back in for incremental builds.
+memmap2 = "0.9"

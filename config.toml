@@ -1,20 +1,23 @@
-# Configuration for scripts/lichess-db.py — the lichess database fetcher.
+# known-chess configuration, shared by `kc-process` and `kc-server`.
+#
+# `kc-process` downloads lichess dumps into [storage].downloads and folds each
+# one into the single combined book at [storage].book. `kc-server` reads that
+# one book. The dumps merged into it are tracked in <book>.sources so
+# `kc-process list` can show what's been processed.
 
 [storage]
-# Where downloaded .pgn.zst dumps live.
+# Where downloaded lichess `.pgn.zst` dumps live.
 downloads = "/media/fallstop/SCRATCH/Chess"
-# Where kc-process writes its .book output. A month counts as "processed"
-# when a matching .book file exists here. Defaults to <downloads>/books.
-processed = "/media/fallstop/SCRATCH/Chess/books"
+# The combined book every dump is merged into. Defaults to
+# <downloads>/known.book if omitted.
+book = "/media/fallstop/SCRATCH/Chess/known.book"
 
 [source]
 # The canonical list of available standard-rated monthly dumps.
 list_url = "https://database.lichess.org/standard/list.txt"
 
-[process]
-# How to invoke kc-process. Leave unset to use `kc-process` from PATH if it's
-# installed, otherwise `cargo run --release -p processor --`. Override with a
-# string (split on spaces) or a list, e.g.
-#   command = "kc-process"
-#   command = ["cargo", "run", "--release", "-p", "processor", "--"]
-
+[server]
+# Address kc-server binds to (overridable with the KC_BIND env var).
+bind = "0.0.0.0:8080"
+# Book to serve. Defaults to [storage].book; set only to serve a different file.
+# book = "/media/fallstop/SCRATCH/Chess/known.book"

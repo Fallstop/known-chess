@@ -9,9 +9,11 @@
 //! * and the on-disk book format ([`book`]).
 
 pub mod book;
+pub mod config;
 pub mod mv;
 pub mod zobrist;
 
 pub use book::{Book, BookBuilder, MoveStat};
+pub use config::Config;
 pub use mv::EncodedMove;
 pub use zobrist::position_hash;

@@ -9,3 +9,4 @@ shakmaty.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 serde.workspace = true
+toml = "0.8"
