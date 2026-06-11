@@ -5,9 +5,12 @@
 //! from here, and how often?" via [`POST /api/lookup`]. The server hashes the
 //! position, binary-searches the book, and returns the legal continuations.
 //!
-//! The book to load comes from `config.toml` (see [`shared::config`]): the
-//! single combined book at `[storage].book` (or `[server].book`). The bind
-//! address comes from `[server].bind`, overridable with `KC_BIND`.
+//! The book to load comes from `KC_BOOK_PATH` if set (the deployment path —
+//! see the root `Dockerfile`), otherwise from `config.toml` (see
+//! [`shared::config`]): the single combined book at `[storage].book` (or
+//! `[server].book`). When `KC_BOOK_PATH` is set no `config.toml` is required, so
+//! the server runs from environment variables alone. The bind address comes from
+//! `KC_BIND`, falling back to `[server].bind` (or `0.0.0.0:8080`).
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -35,8 +38,16 @@ async fn main() -> Result<()> {
         )
         .init();
 
-    let cfg = Config::load(std::env::var_os("KC_CONFIG").map(PathBuf::from).as_deref())?;
-    let book_path = cfg.server_book_path();
+    // `KC_BOOK_PATH` (set by the deployment image) points straight at the book
+    // and lets the server run with no `config.toml`. Only fall back to loading
+    // config — and only require it to exist — when the env var is absent.
+    let (book_path, cfg_bind) = match std::env::var_os("KC_BOOK_PATH") {
+        Some(p) => (PathBuf::from(p), None),
+        None => {
+            let cfg = Config::load(std::env::var_os("KC_CONFIG").map(PathBuf::from).as_deref())?;
+            (cfg.server_book_path(), Some(cfg.server.bind))
+        }
+    };
     let book =
         open_book(&book_path).with_context(|| format!("opening book {}", book_path.display()))?;
     tracing::info!(positions = book.position_count(), path = %book_path.display(), "book loaded");
@@ -51,7 +62,10 @@ async fn main() -> Result<()> {
         .layer(TraceLayer::new_for_http());
 
     // KC_BIND overrides the configured address, e.g. for local dev.
-    let bind = std::env::var("KC_BIND").unwrap_or(cfg.server.bind);
+    let bind = std::env::var("KC_BIND")
+        .ok()
+        .or(cfg_bind)
+        .unwrap_or_else(|| "0.0.0.0:8080".to_string());
     let addr: SocketAddr = bind.parse().with_context(|| format!("parsing bind address {bind:?}"))?;
     tracing::info!(%addr, "listening");
 

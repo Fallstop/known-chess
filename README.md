@@ -144,11 +144,33 @@ npm run dev      # → http://localhost:5173, /api proxied to :8080
 
 ### With Docker
 
+A single image (root `Dockerfile`) runs both the Rust API and the SvelteKit
+frontend; the frontend is the only exposed port and proxies `/api` to the API
+internally (see `frontend/src/hooks.server.ts`). The book is **not** baked in —
+mount it and point `KC_BOOK_PATH` at it.
+
 ```sh
 # Build a book into ./data first (step 1), then:
 docker compose up --build
-# server → :8080, frontend → :3000
+# app → :3000  (book mounted from ./data/book.book)
 ```
+
+### Deploy on CapRover
+
+The repo ships a `captain-definition` pointing at the root `Dockerfile`, so the
+build context is the repo root. Deploy, then:
+
+1. **Add a persistent volume** mapped to `/data` (Apps → your app → App Configs).
+2. **Upload the book** into that volume as `book.book` (e.g. scp it onto the
+   host and copy it into the volume's directory under
+   `/captain/data/[app]/...`, or use an interactive container).
+3. **Set the env var** `KC_BOOK_PATH=/data/book.book` (the image default already
+   points here, so this is only needed if you store the book elsewhere).
+4. **Container HTTP port**: `3000`. Enable HTTPS/websocket as desired.
+
+`kc-server` runs internally on `127.0.0.1:8080`; nothing but port `3000` is
+exposed. On boot the container fails fast with a clear message if the book is
+missing at `KC_BOOK_PATH`.
 
 ## API
 

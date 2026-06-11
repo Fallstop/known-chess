@@ -1,30 +1,19 @@
-# Brings up the Rust server (serving a prebuilt book) and the frontend.
+# Single-container build matching the CapRover deployment (root Dockerfile):
+# kc-server (Rust API) and the SvelteKit frontend run together; the frontend is
+# the only exposed port and proxies /api to the server internally.
 #
-# Before running, generate a book into ./data/book.book with:
+# The book is mounted, not baked in. Generate one into ./data/book.book first:
 #   cargo run --release --bin kc-process -- --input <lichess.pgn.zst> --output data/book.book
 
 services:
-  server:
+  known-chess:
     build:
       context: .
-      dockerfile: crates/server/Dockerfile
+      dockerfile: Dockerfile
     environment:
       KC_BOOK_PATH: /data/book.book
-      KC_BIND: 0.0.0.0:8080
       RUST_LOG: info
     volumes:
       - ./data:/data:ro
     ports:
-      - "8080:8080"
-
-  frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
-    environment:
-      # The Node adapter serves SSR; in production point this at the server.
-      KC_SERVER_URL: http://server:8080
-    ports:
       - "3000:3000"
-    depends_on:
-      - server

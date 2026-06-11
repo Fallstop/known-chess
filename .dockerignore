@@ -1,0 +1,22 @@
+# Keep the build context small: never ship build artefacts, deps, or the
+# multi-GB lichess dumps / book into the Docker build.
+target
+**/*.rs.bk
+
+frontend/node_modules
+frontend/.svelte-kit
+frontend/build
+frontend/.vercel
+frontend/.output
+
+# Data: raw dumps and generated books are large and mounted at runtime, not built in.
+data
+*.pgn
+*.pgn.zst
+*.book
+
+.git
+.gitignore
+*.swp
+.DS_Store
+.idea
