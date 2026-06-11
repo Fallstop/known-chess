@@ -184,26 +184,134 @@
 	const previewFrom = $derived(previewUci ? previewUci.slice(0, 2) : null);
 	const previewTo = $derived(previewUci ? previewUci.slice(2, 4) : null);
 
+	function completeMove(from: string, to: string, fromDrag = false) {
+		const opts = byFrom.get(from)?.get(to);
+		if (!opts) return;
+		if (opts.length > 1) {
+			promo = { from, to, options: [...opts].sort((a, b) => b.count - a.count) };
+			return;
+		}
+		if (fromDrag) {
+			// Settle the dragged piece on its destination immediately so it does
+			// not snap home and glide back when the new FEN arrives.
+			const victim = pieces.find((p) => p.square === to);
+			if (victim) {
+				ghosts = [...ghosts, victim];
+				setTimeout(() => (ghosts = ghosts.filter((x) => x.id !== victim.id)), 350);
+			}
+			pieces = pieces.filter((p) => p.id !== victim?.id).map((p) => (p.square === from ? { ...p, square: to } : p));
+		}
+		onMove(opts[0].uci);
+		selected = null;
+	}
+
+	/** Keyboard path (Enter/Space on a focused square). */
 	function clickSquare(sq: string) {
 		if (!interactive) return;
 		promo = null;
 		if (selected && targets.has(sq)) {
-			const opts = targets.get(sq)!;
-			if (opts.length === 1) {
-				onMove(opts[0].uci);
-				selected = null;
-			} else {
-				promo = { from: selected, to: sq, options: [...opts].sort((a, b) => b.count - a.count) };
-			}
+			completeMove(selected, sq);
 			return;
 		}
 		selected = byFrom.has(sq) && sq !== selected ? sq : null;
 	}
 
+	// ——— dragging (pointer events: one path for mouse + touch) ——————————
+
+	interface Drag {
+		from: string;
+		pointerId: number;
+		/** Where the pointer went down, board-relative px (drag threshold). */
+		sx: number;
+		sy: number;
+		x: number;
+		y: number;
+		moved: boolean;
+		wasSelected: boolean;
+	}
+	let boardEl = $state<HTMLElement | null>(null);
+	let drag = $state<Drag | null>(null);
+	let dragOver = $state<string | null>(null);
+
+	function boardPoint(e: PointerEvent): { x: number; y: number } | null {
+		if (!boardEl) return null;
+		const r = boardEl.getBoundingClientRect();
+		return { x: e.clientX - r.left, y: e.clientY - r.top };
+	}
+
+	function squareAt(x: number, y: number): string | null {
+		if (!boardEl) return null;
+		const s = boardEl.getBoundingClientRect().width / 8;
+		const cx = Math.floor(x / s);
+		const cy = Math.floor(y / s);
+		if (cx < 0 || cx > 7 || cy < 0 || cy > 7) return null;
+		const f = flipped ? 7 - cx : cx;
+		const r = flipped ? cy : 7 - cy;
+		return FILES[f] + (r + 1);
+	}
+
+	function pointerDown(e: PointerEvent, sq: string) {
+		if (!interactive) return;
+		if (e.pointerType === 'mouse' && e.button !== 0) return;
+		promo = null;
+		if (selected && targets.has(sq)) {
+			completeMove(selected, sq);
+			return;
+		}
+		if (!byFrom.has(sq)) {
+			selected = null;
+			return;
+		}
+		const pt = boardPoint(e);
+		if (!pt) return;
+		const wasSelected = selected === sq;
+		selected = sq;
+		drag = { from: sq, pointerId: e.pointerId, sx: pt.x, sy: pt.y, x: pt.x, y: pt.y, moved: false, wasSelected };
+		try {
+			(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+		} catch {
+			// pointer may already be gone (or synthetic); drag still works via bubbling
+		}
+		e.preventDefault();
+	}
+
+	function pointerMove(e: PointerEvent) {
+		if (!drag || e.pointerId !== drag.pointerId) return;
+		const pt = boardPoint(e);
+		if (!pt) return;
+		const moved = drag.moved || Math.hypot(pt.x - drag.sx, pt.y - drag.sy) > 6;
+		drag = { ...drag, x: pt.x, y: pt.y, moved };
+		dragOver = moved ? squareAt(pt.x, pt.y) : null;
+	}
+
+	function pointerUp(e: PointerEvent) {
+		if (!drag || e.pointerId !== drag.pointerId) return;
+		const d = drag;
+		drag = null;
+		dragOver = null;
+		if (d.moved) {
+			const pt = boardPoint(e);
+			const sq = pt ? squareAt(pt.x, pt.y) : null;
+			// Invalid drops snap back but keep the selection for a second try.
+			if (sq && targets.has(sq)) completeMove(d.from, sq, true);
+		} else if (d.wasSelected) {
+			selected = null; // tapping the selected piece again deselects
+		}
+	}
+
+	function pointerCancel(e: PointerEvent) {
+		if (drag && e.pointerId === drag.pointerId) {
+			drag = null;
+			dragOver = null;
+		}
+	}
+
+	const cellPx = () => (boardEl ? boardEl.getBoundingClientRect().width / 8 : 0);
+
 	const sumCount = (opts: KnownMove[]) => opts.reduce((s, o) => s + o.count, 0);
 </script>
 
-<div class="board" class:locked={!interactive}>
+<div class="board" class:locked={!interactive} class:grabbing={drag?.moved} bind:this={boardEl}>
 	<!-- squares -->
 	{#each CELLS as c (c.sq)}
 		<div
@@ -215,6 +323,7 @@
 			class:check={checkSquare === c.sq}
 			class:movable={interactive && byFrom.has(c.sq)}
 			class:hot={hovered === c.sq && interactive && byFrom.has(c.sq)}
+			class:dragover={dragOver === c.sq && targets.has(c.sq)}
 			style="--x:{xOf(c.f)};--y:{yOf(c.r)}"
 		>
 			{#if yOf(c.r) === 7}<span class="coord file">{FILES[c.f]}</span>{/if}
@@ -224,11 +333,16 @@
 
 	<!-- pieces -->
 	{#each pieces as p (p.id)}
+		{@const dragged = drag !== null && drag.moved && drag.from === p.square}
 		<div
 			class="piece"
 			class:fresh={p.fresh}
 			class:lift={hovered === p.square && interactive && byFrom.has(p.square)}
-			style="--x:{xOf(fileOf(p.square))};--y:{yOf(rankOf(p.square))};--d:{p.delay}ms"
+			class:dragged
+			class:recede={interactive && !byFrom.has(p.square)}
+			style={dragged && drag
+				? `transform: translate(${drag.x - cellPx() / 2}px, ${drag.y - cellPx() / 2}px)`
+				: `--x:${xOf(fileOf(p.square))};--y:${yOf(rankOf(p.square))};--d:${p.delay}ms`}
 		>
 			<img src={src(p)} alt="" draggable="false" />
 		</div>
@@ -251,10 +365,18 @@
 	{#each CELLS as c (c.sq)}
 		<button
 			class="hit"
-			class:pointer={interactive && (byFrom.has(c.sq) || targets.has(c.sq))}
+			class:grab={interactive && byFrom.has(c.sq)}
+			class:point={interactive && targets.has(c.sq)}
 			style="--x:{xOf(c.f)};--y:{yOf(c.r)}"
 			aria-label={c.sq}
-			onclick={() => clickSquare(c.sq)}
+			onpointerdown={(e) => pointerDown(e, c.sq)}
+			onpointermove={pointerMove}
+			onpointerup={pointerUp}
+			onpointercancel={pointerCancel}
+			onclick={(e) => {
+				// Pointer handlers own mouse/touch; only keyboard "clicks" land here.
+				if (e.detail === 0) clickSquare(c.sq);
+			}}
 			onmouseenter={() => (hovered = c.sq)}
 			onmouseleave={() => (hovered = null)}
 		></button>
@@ -334,12 +456,31 @@
 		content: '';
 		position: absolute;
 		inset: 0;
-		background: radial-gradient(circle at 50% 58%, var(--brass-glow) 0%, transparent 62%);
+		background: radial-gradient(circle at 50% 60%, var(--brass) 0%, rgba(201, 160, 78, 0.4) 48%, transparent 70%);
+		box-shadow: inset 0 0 0 2.5px rgba(201, 160, 78, 0.65);
 		opacity: 0.55;
-		transition: opacity 0.15s;
+		animation: breathe 2.6s ease-in-out infinite;
+	}
+	.sq.dark.movable::after {
+		opacity: 0.7;
+	}
+	@keyframes breathe {
+		50% {
+			opacity: 0.95;
+		}
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.sq.movable::after {
+			animation: none;
+		}
 	}
 	.sq.hot::after {
+		animation: none;
 		opacity: 1;
+	}
+	.sq.dragover::before {
+		box-shadow: inset 0 0 0 4px var(--brass-bright);
+		background: var(--brass-tint-strong);
 	}
 	.sq.sel::before {
 		background: var(--brass-tint-strong);
@@ -387,10 +528,24 @@
 		height: 100%;
 		display: block;
 		filter: drop-shadow(0 2px 2px rgba(20, 12, 5, 0.4));
-		transition: transform 0.15s ease;
+		transition: transform 0.15s ease, opacity 0.25s ease, filter 0.25s ease;
 	}
 	.piece.lift img {
 		transform: translateY(-4%) scale(1.05);
+	}
+	/* pieces with no known move step back so the playable ones read instantly */
+	.piece.recede img {
+		opacity: 0.72;
+		filter: drop-shadow(0 2px 2px rgba(20, 12, 5, 0.4)) saturate(0.8) brightness(0.92);
+	}
+	.piece.dragged {
+		transition: none;
+		z-index: 11;
+	}
+	.piece.dragged img {
+		transform: scale(1.14);
+		filter: drop-shadow(0 10px 12px rgba(10, 6, 2, 0.5));
+		transition: none;
 	}
 	.piece.fresh img {
 		animation: pop 0.32s cubic-bezier(0.2, 0.9, 0.35, 1.3) backwards;
@@ -467,9 +622,19 @@
 		padding: 0;
 		appearance: none;
 		cursor: default;
+		-webkit-tap-highlight-color: transparent;
 	}
-	.hit.pointer {
+	/* Block scroll/zoom gestures only where a drag can start or end. */
+	.hit.grab {
+		cursor: grab;
+		touch-action: none;
+	}
+	.hit.point {
 		cursor: pointer;
+		touch-action: none;
+	}
+	.board.grabbing .hit {
+		cursor: grabbing;
 	}
 	.hit:focus-visible {
 		outline: 2px solid var(--brass);

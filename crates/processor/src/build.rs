@@ -32,13 +32,24 @@ pub struct BuildOpts {
 }
 
 pub fn run(cfg: &Config, targets: &[String], opts: &BuildOpts) -> Result<()> {
-    let inputs = resolve_inputs(cfg, targets)?;
+    let output = opts.output.clone().unwrap_or_else(|| cfg.book_path());
+    let manifest_path = manifest_for(cfg, &output);
+
+    // No targets → catch-up mode: every downloaded dump not yet in this book.
+    let inputs = if targets.is_empty() {
+        let pending = catch_up_inputs(cfg, &manifest_path, opts.fresh)?;
+        if pending.is_empty() {
+            tracing::info!("everything downloaded is already in the book — nothing to do");
+            return Ok(());
+        }
+        tracing::info!(count = pending.len(), "catch-up: processing downloaded dumps");
+        pending
+    } else {
+        resolve_inputs(cfg, targets)?
+    };
     if inputs.is_empty() {
         bail!("nothing to process");
     }
-
-    let output = opts.output.clone().unwrap_or_else(|| cfg.book_path());
-    let manifest_path = manifest_for(cfg, &output);
 
     // Start from the existing book (incremental add) unless --fresh.
     let mut builder = BookBuilder::new();
@@ -162,6 +173,34 @@ fn push_unique(out: &mut Vec<(PathBuf, String)>, path: PathBuf, name: String) {
     if !out.iter().any(|(p, _)| p == &path) {
         out.push((path, name));
     }
+}
+
+/// Every downloaded dump in the downloads dir not yet folded into this book,
+/// sorted by name. With `--fresh` the manifest is ignored, so all dumps are
+/// (re)processed. Skips `.part` files from interrupted downloads.
+fn catch_up_inputs(cfg: &Config, manifest_path: &Path, fresh: bool) -> Result<Vec<(PathBuf, String)>> {
+    let already: Vec<String> = if fresh { Vec::new() } else { read_sources(manifest_path) };
+    let dir = &cfg.storage.downloads;
+    let mut out = Vec::new();
+    let read = match std::fs::read_dir(dir) {
+        Ok(r) => r,
+        // No downloads dir yet just means nothing to catch up on.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(out),
+        Err(e) => return Err(e).with_context(|| format!("reading {}", dir.display())),
+    };
+    for entry in read {
+        let path = entry?.path();
+        let name = match path.file_name().and_then(|f| f.to_str()) {
+            Some(n) => n.to_string(),
+            None => continue,
+        };
+        let is_dump = name.ends_with(".pgn.zst") || name.ends_with(".pgn");
+        if is_dump && !already.contains(&name) {
+            out.push((path, name));
+        }
+    }
+    out.sort_by(|a, b| a.1.cmp(&b.1));
+    Ok(out)
 }
 
 fn process_file(input: &Path, builder: &mut BookBuilder, opts: &BuildOpts) -> Result<()> {

@@ -46,10 +46,11 @@ enum Command {
         tags: Vec<String>,
     },
 
-    /// Process downloaded dump(s) or PGN file(s) into book(s).
+    /// Fold dump(s) into the combined book. With no targets, processes every
+    /// downloaded dump not yet in the book (catch-up mode).
     Build {
-        /// Month tags (e.g. 2026-05) and/or paths to .pgn[.zst] files.
-        #[arg(required = true)]
+        /// Month tags (e.g. 2026-05) and/or paths to .pgn[.zst] files. Empty =
+        /// catch up on all downloaded-but-unprocessed dumps.
         targets: Vec<String>,
 
         /// Stop recording each game after this many plies (0 = whole game).

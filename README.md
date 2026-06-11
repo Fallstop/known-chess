@@ -28,8 +28,9 @@ reached by different move orders) collapse onto the same hash automatically.
 
 * **`crates/shared`** — the contract both Rust binaries share: Zobrist hashing,
   the 16-bit move encoding, and the binary book format (reader + writer).
-* **`crates/processor`** (`kc-process`) — streams a PGN dump, replays each game,
-  and records `position → move` counts for games that end in mate/stalemate.
+* **`crates/processor`** (`kc-process`) — downloads lichess dumps, lists what's
+  available/downloaded/processed, and folds each dump's `position → move` counts
+  (for games ending in mate/stalemate) into one combined book.
 * **`crates/server`** (`kc-server`) — `mmap`s the book and serves move lookups
   over HTTP. Dockerised.
 * **`frontend`** — a SvelteKit app. It runs a full chess engine in the browser
@@ -62,28 +63,53 @@ special encoding.
 
 ## Quickstart
 
-### 1. Build a book
+Storage locations live in **`config.toml`** at the repo root — where dumps are
+downloaded, the combined book they're merged into, and the server's bind
+address. Both binaries discover it automatically (an explicit `--config`, the
+`KC_CONFIG` env var, or the nearest `config.toml` walking up from the cwd).
 
-Download a dump from <https://database.lichess.org/> (they come as `.pgn.zst`),
-then:
+```toml
+[storage]
+downloads = "/path/to/Chess"            # where .pgn.zst dumps are saved
+book      = "/path/to/Chess/known.book" # the single combined book
 
-```sh
-# Whole file (use --limit for a quick test on a huge dump):
-cargo run --release --bin kc-process -- \
-  --input lichess_db_standard_rated_2024-01.pgn.zst \
-  --output data/book.book
+[source]
+list_url = "https://database.lichess.org/standard/list.txt"
 
-# Quick smoke test with the bundled sample:
-cargo run --release --bin kc-process -- --input data/sample.pgn --output data/book.book
+[server]
+bind = "0.0.0.0:8080"
 ```
 
-Useful flags: `--limit N` (stop after N qualifying games), `--max-ply N` (cap
-recorded depth), `--any-ending` (keep resignations/timeouts too).
+### 1. Get dumps and build the book
+
+`kc-process` manages the whole dump → book pipeline against the lichess index:
+
+```sh
+KP="cargo run --release --bin kc-process --"
+
+$KP list                 # every month, with downloaded / processed / size
+$KP list 2024            # filter by substring (alias: search)
+$KP get 2024-01 latest   # download dumps for those months (tags, or `latest`)
+$KP build 2024-01        # fold a downloaded month into the combined book
+$KP build                # catch-up: fold in every downloaded-but-unprocessed dump
+$KP build dump.pgn.zst   # or point straight at a file
+```
+
+`build` is **incremental**: it folds the existing book back in first, so adding
+a month doesn't reprocess the dumps already baked in (use `--fresh` to rebuild
+from scratch). Dumps merged in are tracked in `<book>.sources`, which drives the
+PROCESSED column in `list`.
+
+Useful `build` flags: `--limit N` (stop after N qualifying games per dump),
+`--max-ply N` (cap recorded depth), `--any-ending` (keep resignations/timeouts),
+`--output PATH` (write somewhere other than `[storage].book`).
 
 ### 2. Run the server
 
+The server reads the combined book named in `config.toml` — no path argument:
+
 ```sh
-KC_BOOK_PATH=data/book.book cargo run --release --bin kc-server
+cargo run --release --bin kc-server
 # → listening on 0.0.0.0:8080
 ```
 
@@ -95,8 +121,8 @@ curl -s localhost:8080/api/lookup -H 'content-type: application/json' \
 
 | env | default | meaning |
 |-----|---------|---------|
-| `KC_BOOK_PATH` | `data/book.book` | path to the book file |
-| `KC_BIND` | `0.0.0.0:8080` | listen address |
+| `KC_CONFIG` | nearest `config.toml` | path to the config file |
+| `KC_BIND` | `[server].bind` | listen address (overrides config) |
 | `RUST_LOG` | `info` | log filter |
 
 ### 3. Run the frontend
@@ -140,9 +166,10 @@ in the loaded book.
 ```
 .
 ├── Cargo.toml                  # Rust workspace
+├── config.toml                 # storage paths + server bind (both binaries)
 ├── crates/
-│   ├── shared/                 # hashing + move encoding + book format
-│   ├── processor/              # kc-process: PGN → book
+│   ├── shared/                 # hashing + move encoding + book format + config
+│   ├── processor/              # kc-process: get/list/build dumps → book
 │   └── server/                 # kc-server: book → HTTP (+ Dockerfile)
 ├── frontend/                   # SvelteKit app (+ Dockerfile)
 ├── data/                       # books & dumps (gitignored)
