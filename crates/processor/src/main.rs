@@ -62,13 +62,18 @@ enum Command {
         #[arg(long, default_value_t = 0)]
         max_ply: usize,
 
-        /// Stop after this many games per input (0 = all). Handy for tests.
+        /// Process at most this many games per input, counted before the
+        /// game-ending filter (0 = all). Handy for tests.
         #[arg(long, default_value_t = 0)]
         limit: u64,
 
         /// Keep games regardless of how they ended (default: only board endings).
         #[arg(long, default_value_t = false)]
         any_ending: bool,
+
+        /// Parser threads (0 = one per CPU core).
+        #[arg(short, long, default_value_t = 0)]
+        jobs: usize,
 
         /// Write the combined book here instead of [storage].book.
         #[arg(short, long)]
@@ -99,6 +104,7 @@ fn main() -> Result<()> {
             max_ply,
             limit,
             any_ending,
+            jobs,
             output,
             fresh,
         } => build::run(
@@ -108,6 +114,7 @@ fn main() -> Result<()> {
                 max_ply,
                 limit,
                 any_ending,
+                jobs,
                 output,
                 fresh,
             },

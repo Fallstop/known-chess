@@ -2,31 +2,41 @@
 //!
 //! Accepts month tags (e.g. `2026-05`, resolved to a downloaded dump) or paths
 //! to `.pgn`/`.pgn.zst` files, and merges every one into the single combined
-//! book at `[storage].book` (or `--output`). Adding a month is incremental: new
-//! dumps are tallied in memory, then stream-merged with the existing (mmap'd)
-//! book into a temp file that replaces it — dumps already baked in are never
-//! reprocessed and the old book is never loaded into RAM. A progress bar tracks
-//! each (compressed) input. Every dump merged is recorded in the book's
+//! book at `[storage].book` (or `--output`). Parsing is parallel: the main
+//! thread decompresses and splits each dump into batches of whole games, a
+//! pool of worker threads (`--jobs`) replays them into per-thread tallies, and
+//! the sorted runs are k-way stream-merged with the existing (mmap'd) book
+//! into a temp file that replaces it — dumps already baked in are never
+//! reprocessed and the old book is never loaded into RAM. A progress bar
+//! tracks each (compressed) input. Every dump merged is recorded in the book's
 //! `.sources` manifest so `list` can show it processed.
 
 use std::fs::File;
-use std::io::{self, BufReader, Read};
+use std::io::{self, BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{mpsc, Mutex};
 
 use anyhow::{bail, Context, Result};
 use indicatif::{ProgressBar, ProgressStyle};
 use memmap2::Mmap;
 use pgn_reader::{BufferedReader, RawHeader, SanPlus, Skip, Visitor};
 use shakmaty::{Chess, Position};
-use shared::{canonical_index, position_hash, write_merged, Book, BookBuilder, Config};
+use shared::{canonical_index, position_hash, write_merged_many, Book, BookBuilder, Config};
 
 use crate::fetch;
+
+/// Raw-PGN batch size handed to each parser thread. Big enough that channel
+/// and lock traffic is noise, small enough to keep all workers fed.
+const BATCH_BYTES: usize = 2 << 20;
 
 /// Knobs forwarded from the CLI to the per-file processor.
 pub struct BuildOpts {
     pub max_ply: usize,
     pub limit: u64,
     pub any_ending: bool,
+    /// Parser threads (0 = one per CPU core).
+    pub jobs: usize,
     /// Write the combined book here instead of `[storage].book`.
     pub output: Option<PathBuf>,
     /// Ignore (and overwrite) any existing combined book instead of adding to it.
@@ -67,15 +77,17 @@ pub fn run(cfg: &Config, targets: &[String], opts: &BuildOpts) -> Result<()> {
         None
     };
 
-    let mut builder = BookBuilder::new();
-    for (path, dump_name) in &inputs {
-        process_file(path, &mut builder, opts)
-            .with_context(|| format!("processing {}", path.display()))?;
+    let jobs = match opts.jobs {
+        0 => std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4),
+        n => n,
+    };
+    let (runs, tallies) = process_inputs(&inputs, opts, jobs)?;
+    for ((path, dump_name), (games, skipped)) in inputs.iter().zip(&tallies) {
+        tracing::info!(input = %path.display(), games, skipped, "processed dump");
         if !sources.contains(dump_name) {
             sources.push(dump_name.clone());
         }
     }
-    let new_entries = builder.into_sorted();
 
     // Write to a temp file and rename: the existing book is being read out of
     // an mmap of the destination path while we write.
@@ -90,7 +102,7 @@ pub fn run(cfg: &Config, targets: &[String], opts: &BuildOpts) -> Result<()> {
     let mut file = io::BufWriter::new(
         File::create(&tmp).with_context(|| format!("creating {}", tmp.display()))?,
     );
-    let stats = write_merged(existing.as_ref(), &new_entries, &mut file)
+    let stats = write_merged_many(existing.as_ref(), &runs, &mut file)
         .with_context(|| format!("writing {}", tmp.display()))?;
     drop(file);
     drop(existing); // unmap before replacing the file underneath
@@ -224,19 +236,106 @@ fn catch_up_inputs(cfg: &Config, manifest_path: &Path, fresh: bool) -> Result<Ve
     Ok(out)
 }
 
-fn process_file(input: &Path, builder: &mut BookBuilder, opts: &BuildOpts) -> Result<()> {
-    let (reader, progress) = open_input(input)?;
-    let mut buffered = BufferedReader::new(reader);
+/// Parse every input with a pool of parser threads. The main thread
+/// decompresses each dump and splits it into batches of whole games; workers
+/// replay games into per-thread builders, sorted into runs once the channel
+/// drains. Returns one sorted run per worker plus per-input (kept, skipped)
+/// tallies, in input order.
+fn process_inputs(
+    inputs: &[(PathBuf, String)],
+    opts: &BuildOpts,
+    jobs: usize,
+) -> Result<(Vec<shared::SortedEntries>, Vec<(u64, u64)>)> {
+    let tallies: Vec<(AtomicU64, AtomicU64)> = inputs
+        .iter()
+        .map(|_| (AtomicU64::new(0), AtomicU64::new(0)))
+        .collect();
+    // Bounded so decompression can't run unboundedly ahead of the parsers.
+    let (tx, rx) = mpsc::sync_channel::<(usize, Vec<u8>)>(jobs * 2);
+    let rx = Mutex::new(rx);
 
-    let mut visitor = BookVisitor::new(builder, opts.max_ply, opts.any_ending, progress.clone());
-    while buffered.read_game(&mut visitor)?.is_some() {
-        if opts.limit != 0 && visitor.games >= opts.limit {
+    let runs = std::thread::scope(|scope| -> Result<Vec<shared::SortedEntries>> {
+        let workers: Vec<_> = (0..jobs)
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut builder = BookBuilder::new();
+                    loop {
+                        // Hold the lock only to receive; parsing runs unlocked.
+                        let received = rx.lock().unwrap().recv();
+                        let Ok((file_idx, batch)) = received else { break };
+                        let mut visitor =
+                            BookVisitor::new(&mut builder, opts.max_ply, opts.any_ending);
+                        let mut reader = BufferedReader::new(batch.as_slice());
+                        // Reading from an in-memory batch cannot fail.
+                        while reader.read_game(&mut visitor).expect("in-memory pgn").is_some() {}
+                        let (kept, skipped) = &tallies[file_idx];
+                        kept.fetch_add(visitor.games, Ordering::Relaxed);
+                        skipped.fetch_add(visitor.skipped_games, Ordering::Relaxed);
+                    }
+                    builder.into_sorted()
+                })
+            })
+            .collect();
+
+        for (file_idx, (path, _)) in inputs.iter().enumerate() {
+            dispatch_file(path, file_idx, &tx, opts.limit, &tallies[file_idx].0)
+                .with_context(|| format!("processing {}", path.display()))?;
+        }
+        drop(tx); // close the channel so workers finish and sort their runs
+
+        Ok(workers
+            .into_iter()
+            .map(|w| w.join().expect("parser thread panicked"))
+            .collect())
+    })?;
+
+    let tallies = tallies
+        .iter()
+        .map(|(kept, skipped)| (kept.load(Ordering::Relaxed), skipped.load(Ordering::Relaxed)))
+        .collect();
+    Ok((runs, tallies))
+}
+
+/// Split one dump into batches of whole games and queue them for the parser
+/// threads. Batches are only ever cut immediately before a `[Event ` header
+/// line, so a game never spans two batches (lichess movetext never begins a
+/// line with `[Event `). Respects `limit` by not dispatching further games.
+fn dispatch_file(
+    path: &Path,
+    file_idx: usize,
+    tx: &mpsc::SyncSender<(usize, Vec<u8>)>,
+    limit: u64,
+    kept: &AtomicU64,
+) -> Result<()> {
+    let (reader, progress) = open_input(path)?;
+    let mut reader = BufReader::with_capacity(1 << 20, reader);
+    let mut batch: Vec<u8> = Vec::with_capacity(BATCH_BYTES + (4 << 10));
+    let mut line: Vec<u8> = Vec::with_capacity(1 << 10);
+    let mut games: u64 = 0;
+
+    loop {
+        line.clear();
+        if reader.read_until(b'\n', &mut line)? == 0 {
             break;
         }
+        if line.starts_with(b"[Event ") {
+            if limit != 0 && games >= limit {
+                break;
+            }
+            games += 1;
+            if batch.len() >= BATCH_BYTES {
+                if tx.send((file_idx, std::mem::take(&mut batch))).is_err() {
+                    bail!("parser threads exited early");
+                }
+                progress.set_message(format!("{} games kept", kept.load(Ordering::Relaxed)));
+            }
+        }
+        batch.extend_from_slice(&line);
     }
-    let (games, skipped) = (visitor.games, visitor.skipped_games);
+    if !batch.is_empty() && tx.send((file_idx, batch)).is_err() {
+        bail!("parser threads exited early");
+    }
     progress.finish_and_clear();
-    tracing::info!(input = %input.display(), games, skipped, "processed dump");
     Ok(())
 }
 
@@ -299,16 +398,10 @@ struct BookVisitor<'a> {
     pending: Vec<(u64, u8)>,
     games: u64,
     skipped_games: u64,
-    progress: ProgressBar,
 }
 
 impl<'a> BookVisitor<'a> {
-    fn new(
-        builder: &'a mut BookBuilder,
-        max_ply: usize,
-        any_ending: bool,
-        progress: ProgressBar,
-    ) -> Self {
+    fn new(builder: &'a mut BookBuilder, max_ply: usize, any_ending: bool) -> Self {
         Self {
             builder,
             pos: Chess::default(),
@@ -319,7 +412,6 @@ impl<'a> BookVisitor<'a> {
             pending: Vec::new(),
             games: 0,
             skipped_games: 0,
-            progress,
         }
     }
 }
@@ -396,12 +488,5 @@ impl Visitor for BookVisitor<'_> {
             self.skipped_games += 1;
         }
         self.pending.clear();
-
-        // Refresh the bar's suffix occasionally so it shows live counts without
-        // formatting on every single game.
-        if (self.games + self.skipped_games) % 20_000 == 0 {
-            self.progress
-                .set_message(format!("{} games kept", self.games));
-        }
     }
 }

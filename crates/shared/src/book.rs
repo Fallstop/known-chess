@@ -406,48 +406,79 @@ fn combine_moves(moves: &mut Vec<(u8, u64)>) {
     moves.sort_unstable_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
 }
 
+/// One input to the k-way merge: either the existing book's sequential decoder
+/// or a builder's sorted run. Each yields strictly-increasing hashes.
+enum MergeSource<'a, B: AsRef<[u8]>> {
+    Old(std::iter::Peekable<BookIter<'a, B>>),
+    Run(std::iter::Peekable<std::slice::Iter<'a, (u64, Slot)>>),
+}
+
+impl<B: AsRef<[u8]>> MergeSource<'_, B> {
+    fn peek_hash(&mut self) -> Option<u64> {
+        match self {
+            MergeSource::Old(it) => it.peek().map(|(h, _)| *h),
+            MergeSource::Run(it) => it.peek().map(|(h, _)| *h),
+        }
+    }
+
+    /// Pop the head entry, appending its moves to `out`.
+    fn take_into(&mut self, out: &mut Vec<(u8, u64)>) {
+        match self {
+            MergeSource::Old(it) => {
+                let (_, moves) = it.next().expect("peeked");
+                out.extend(moves.iter().map(|m| (m.index, m.count)));
+            }
+            MergeSource::Run(it) => {
+                let (_, slot) = it.next().expect("peeked");
+                slot.append_to(out);
+            }
+        }
+    }
+}
+
 /// Stream-merge an existing book (if any) with newly built entries, writing a
-/// complete new book to `out`. Move counts for positions present in both are
-/// summed; neither input is held in memory beyond one entry at a time.
+/// complete new book to `out`. See [`write_merged_many`].
 pub fn write_merged<B: AsRef<[u8]>, W: Write>(
     old: Option<&Book<B>>,
     new: &SortedEntries,
+    out: W,
+) -> io::Result<WriteStats> {
+    write_merged_many(old, std::slice::from_ref(new), out)
+}
+
+/// Stream-merge an existing book (if any) with any number of sorted runs —
+/// typically one per worker thread — writing a complete new book to `out`.
+/// Move counts for positions present in several inputs are summed. No input is
+/// held in memory beyond one entry at a time, and the run count stays small,
+/// so heads are scanned linearly rather than through a heap.
+pub fn write_merged_many<B: AsRef<[u8]>, W: Write>(
+    old: Option<&Book<B>>,
+    runs: &[SortedEntries],
     mut out: W,
 ) -> io::Result<WriteStats> {
-    let estimate = old.map_or(0, |b| b.position_count()) + new.0.len() as u64;
+    let estimate = old.map_or(0, |b| b.position_count())
+        + runs.iter().map(|r| r.0.len() as u64).sum::<u64>();
     let mut writer = BookWriter::new(rice_k_for(estimate));
 
-    let mut old_it = old.map(|b| b.iter().peekable());
-    let mut new_it = new.0.iter().peekable();
-    let mut moves: Vec<(u8, u64)> = Vec::new();
+    let mut sources: Vec<MergeSource<'_, B>> = Vec::with_capacity(runs.len() + 1);
+    if let Some(book) = old {
+        sources.push(MergeSource::Old(book.iter().peekable()));
+    }
+    sources.extend(runs.iter().map(|r| MergeSource::Run(r.0.iter().peekable())));
 
+    let mut moves: Vec<(u8, u64)> = Vec::new();
     loop {
-        let old_hash = old_it.as_mut().and_then(|it| it.peek().map(|(h, _)| *h));
-        let new_hash = new_it.peek().map(|(h, _)| *h);
-        moves.clear();
-        let hash = match (old_hash, new_hash) {
-            (None, None) => break,
-            (Some(oh), Some(nh)) if oh == nh => {
-                let (_, old_moves) = old_it.as_mut().unwrap().next().unwrap();
-                moves.extend(old_moves.iter().map(|m| (m.index, m.count)));
-                let (_, slot) = new_it.next().unwrap();
-                slot.append_to(&mut moves);
-                oh
-            }
-            (Some(oh), nh) if nh.is_none_or(|nh| oh < nh) => {
-                let (_, old_moves) = old_it.as_mut().unwrap().next().unwrap();
-                moves.extend(old_moves.iter().map(|m| (m.index, m.count)));
-                oh
-            }
-            (_, Some(nh)) => {
-                let (_, slot) = new_it.next().unwrap();
-                slot.append_to(&mut moves);
-                nh
-            }
-            (Some(_), None) => unreachable!("covered by the old-only arm"),
+        let Some(min) = sources.iter_mut().filter_map(|s| s.peek_hash()).min() else {
+            break;
         };
+        moves.clear();
+        for source in &mut sources {
+            if source.peek_hash() == Some(min) {
+                source.take_into(&mut moves);
+            }
+        }
         combine_moves(&mut moves);
-        writer.push(hash, &moves);
+        writer.push(min, &moves);
     }
     writer.finish(&mut out)
 }
@@ -771,6 +802,52 @@ mod tests {
                 MoveStat { index: 5, count: 1 },
             ]
         );
+    }
+
+    #[test]
+    fn many_way_merge_combines_overlapping_runs() {
+        let hashes = test_hashes(2000);
+
+        // An existing book covering the first quarter.
+        let mut base = BookBuilder::new();
+        for &h in &hashes[..500] {
+            base.record(h, 1);
+        }
+        let base = write_fresh(base);
+        let base = Book::open(base.as_slice()).unwrap();
+
+        // Four worker runs that interleave over the full range and all touch
+        // hashes[0] — as parallel workers sharing opening positions would.
+        let runs: Vec<SortedEntries> = (0..4)
+            .map(|w| {
+                let mut b = BookBuilder::new();
+                for &h in hashes.iter().skip(w).step_by(4) {
+                    b.record(h, 2);
+                }
+                b.record(hashes[0], 1);
+                b.into_sorted()
+            })
+            .collect();
+
+        let mut merged = Vec::new();
+        let stats = write_merged_many(Some(&base), &runs, &mut merged).unwrap();
+        assert_eq!(stats.positions, hashes.len() as u64);
+
+        let book = Book::open(merged.as_slice()).unwrap();
+        // hashes[0]: base (idx 1) + its own run (idx 2) + one idx-1 bump from
+        // each of the four runs.
+        assert_eq!(
+            book.lookup(hashes[0]),
+            vec![MoveStat { index: 1, count: 5 }, MoveStat { index: 2, count: 1 }]
+        );
+        for (i, &h) in hashes.iter().enumerate().skip(1) {
+            let mut expected = vec![MoveStat { index: 2, count: 1 }];
+            if i < 500 {
+                expected.push(MoveStat { index: 1, count: 1 });
+                expected.sort_by(|a, b| b.count.cmp(&a.count).then(a.index.cmp(&b.index)));
+            }
+            assert_eq!(book.lookup(h), expected, "hash #{i}");
+        }
     }
 
     #[test]
