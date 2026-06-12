@@ -1,11 +1,12 @@
 # Build context is the frontend dir: `docker build -f frontend/Dockerfile frontend`
 
 FROM node:24-slim AS builder
+RUN corepack enable
 WORKDIR /app
-COPY package.json package-lock.json* ./
-RUN npm install
+COPY package.json pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile
 COPY . .
-RUN npm run build
+RUN pnpm run build
 
 FROM node:24-slim AS runtime
 WORKDIR /app

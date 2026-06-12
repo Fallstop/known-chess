@@ -138,8 +138,8 @@ curl -s localhost:8080/api/lookup -H 'content-type: application/json' \
 
 ```sh
 cd frontend
-npm install
-npm run dev      # → http://localhost:5173, /api proxied to :8080
+pnpm install
+pnpm dev         # → http://localhost:5173, /api proxied to :8080
 ```
 
 ### With Docker
@@ -176,8 +176,8 @@ The frontend builds with `@sveltejs/adapter-cloudflare`
 (see `frontend/wrangler.toml`).
 
 * **Via the dashboard**: connect the repo; root directory `frontend`, build
-  command `npm run build`, output directory `.svelte-kit/cloudflare`.
-* **Via wrangler**: `cd frontend && npm run build && npx wrangler pages deploy`.
+  command `pnpm build`, output directory `.svelte-kit/cloudflare`.
+* **Via wrangler**: `cd frontend && pnpm build && pnpm dlx wrangler pages deploy`.
 
 Set these in the Pages **build** environment (they are baked in at build time):
 
