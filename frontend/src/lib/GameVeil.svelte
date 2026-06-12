@@ -32,12 +32,7 @@
 					</div>
 				{:else if game.sourceState === 'found' && game.sourceGame}
 					{@const src = game.sourceGame}
-					<a
-						class="card found"
-						href="https://lichess.org/{src.id}#{game.history.length}"
-						target="_blank"
-						rel="noopener"
-					>
+					<div class="card found">
 						<span class="kicker">{src.exact ? 'You replayed this game' : 'Closest match on record'}</span>
 
 						<span class="side" class:won={src.winner === 'white'}>
@@ -56,13 +51,20 @@
 							<span class="side draw"><span class="disc half" aria-hidden="true"></span>Drawn</span>
 						{/if}
 
-						<span class="cta">
+						<div class="cta">
 							<span class="cta-meta">
-								{src.speed ? src.speed : 'game'}{src.month ? ` · ${fmtMonth(src.month)}` : ''}
+								{src.speed ? `${src.speed} game` : 'Game'}{src.month ? ` · ${fmtMonth(src.month)}` : ''}
 							</span>
-							<span class="cta-btn">Open on Lichess <span class="arr">↗</span></span>
-						</span>
-					</a>
+							<a
+								class="cta-btn"
+								href="https://lichess.org/{src.id}#{game.history.length}"
+								target="_blank"
+								rel="noopener"
+							>
+								Open on Lichess <span class="arr">↗</span>
+							</a>
+						</div>
+					</div>
 				{:else if game.sourceState === 'none'}
 					<p class="trace-none">This exact game isn't indexed on Lichess.</p>
 				{/if}
@@ -238,6 +240,7 @@
 		text-overflow: ellipsis;
 		min-width: 0;
 	}
+	/* A quiet, secondary link — the brass "Play again" stays the lone primary action. */
 	.cta-btn {
 		display: inline-flex;
 		align-items: center;
@@ -247,37 +250,34 @@
 		font-weight: 600;
 		letter-spacing: 0.1em;
 		text-transform: uppercase;
-		color: #14110a;
-		background: var(--brass);
+		text-decoration: none;
+		color: var(--brass-bright);
+		background: none;
+		border: 1px solid var(--brass-soft);
 		border-radius: 999px;
-		padding: 0.4rem 0.75rem;
+		padding: 0.36rem 0.7rem;
 		flex: none;
-		transition: background 0.15s, transform 0.15s;
+		transition: background 0.15s, border-color 0.15s;
+	}
+	.cta-btn:hover {
+		background: var(--brass-tint);
+		border-color: var(--brass);
+	}
+	.cta-btn:focus-visible {
+		outline: 2px solid var(--brass-bright);
+		outline-offset: 2px;
 	}
 	.arr {
 		font-size: 0.8rem;
 		transition: transform 0.2s;
 	}
-
-	.card.found {
-		cursor: pointer;
-		transition: border-color 0.2s, box-shadow 0.2s, transform 0.2s;
-		animation: card-in 0.4s cubic-bezier(0.2, 0.9, 0.3, 1) backwards;
-	}
-	.card.found:hover {
-		border-color: var(--brass-soft);
-		box-shadow: 0 10px 30px -14px rgba(0, 0, 0, 0.8), 0 0 0 1px var(--brass-soft) inset;
-		transform: translateY(-2px);
-	}
-	.card.found:hover .cta-btn {
-		background: var(--brass-bright);
-	}
-	.card.found:hover .arr {
+	.cta-btn:hover .arr {
 		transform: translate(2px, -2px);
 	}
-	.card.found:focus-visible {
-		outline: 2px solid var(--brass-bright);
-		outline-offset: 2px;
+
+	/* The card itself is just a panel — names stay selectable, not a click target. */
+	.card.found {
+		animation: card-in 0.4s cubic-bezier(0.2, 0.9, 0.3, 1) backwards;
 	}
 	@keyframes card-in {
 		from {

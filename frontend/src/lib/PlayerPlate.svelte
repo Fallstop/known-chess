@@ -12,14 +12,7 @@
 		<img src="/pieces/{color}K.svg" alt="" />
 	</span>
 	<span class="who">
-		<span class="side-label">{color === 'w' ? 'White' : 'Black'}</span>
-		<input
-			class="pname"
-			placeholder="Add a name"
-			maxlength="20"
-			spellcheck="false"
-			bind:value={game.names[color]}
-		/>
+		<span class="pname">{color === 'w' ? 'White' : 'Black'}</span>
 	</span>
 	{#if active}
 		<span class="to-move"><span class="pulse"></span>to move</span>
@@ -91,33 +84,15 @@
 		flex: 1;
 		line-height: 1.1;
 	}
-	.side-label {
-		font-family: var(--mono);
-		font-size: 0.58rem;
-		font-weight: 600;
-		letter-spacing: 0.18em;
-		text-transform: uppercase;
-		color: var(--ink-faint);
-	}
-	.plate.active .side-label {
-		color: var(--brass);
-	}
 	.pname {
-		background: none;
-		border: 0;
-		outline: 0;
 		color: var(--ink);
 		font-family: var(--serif);
 		font-size: 1.05rem;
 		font-weight: 600;
 		min-width: 0;
-		width: 100%;
-		padding: 0;
 	}
-	.pname::placeholder {
-		color: var(--ink-faint);
-		font-style: italic;
-		font-weight: 500;
+	.plate.active .pname {
+		color: var(--brass-bright);
 	}
 
 	.to-move {

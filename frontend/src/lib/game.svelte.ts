@@ -50,7 +50,6 @@ export class KnownGame {
 	sound = $state(true);
 	/** A move (UCI) to spotlight on the board, e.g. while hovering a continuation. */
 	previewUci = $state<string | null>(null);
-	names = $state({ w: '', b: '' });
 	/** The real lichess game a finished line replayed, once identified. */
 	sourceGame = $state<SourceGame | null>(null);
 	/** Lifecycle of the lichess trace, so the veil can show progress/outcome. */
@@ -94,7 +93,7 @@ export class KnownGame {
 	});
 
 	name(color: 'w' | 'b'): string {
-		return this.names[color] || (color === 'w' ? 'White' : 'Black');
+		return color === 'w' ? 'White' : 'Black';
 	}
 
 	toMoveName = $derived.by(() => this.name(this.turn));
