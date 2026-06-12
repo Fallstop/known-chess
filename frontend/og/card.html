@@ -1,0 +1,256 @@
+<!doctype html>
+<!--
+	Source for static/og.png (1200×630 Open Graph card).
+	Regenerate with: pnpm og  (see og/render.sh)
+-->
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<style>
+			@font-face {
+				font-family: 'Fraunces Variable';
+				src: url('../node_modules/@fontsource-variable/fraunces/files/fraunces-latin-full-normal.woff2')
+					format('woff2-variations');
+				font-weight: 100 900;
+			}
+			@font-face {
+				font-family: 'IBM Plex Mono';
+				src: url('../node_modules/@fontsource/ibm-plex-mono/files/ibm-plex-mono-latin-500-normal.woff2')
+					format('woff2');
+				font-weight: 500;
+			}
+			@font-face {
+				font-family: 'IBM Plex Mono';
+				src: url('../node_modules/@fontsource/ibm-plex-mono/files/ibm-plex-mono-latin-600-normal.woff2')
+					format('woff2');
+				font-weight: 600;
+			}
+
+			:root {
+				--bg: #0f1613;
+				--ink: #ece5d3;
+				--ink-dim: #a6af9f;
+				--brass: #c9a04e;
+				--brass-bright: #e8c87c;
+				--sq-light: #e6d7b4;
+				--sq-dark: #8a6246;
+			}
+
+			* {
+				margin: 0;
+				box-sizing: border-box;
+			}
+
+			.card {
+				position: relative;
+				width: 1200px;
+				height: 630px;
+				overflow: hidden;
+				background:
+					radial-gradient(900px 560px at 80% -15%, #1b2922 0%, transparent 62%),
+					radial-gradient(760px 500px at -8% 115%, #141f18 0%, transparent 55%),
+					var(--bg);
+				color: var(--ink);
+				font-family: 'Fraunces Variable', Georgia, serif;
+				font-optical-sizing: auto;
+			}
+
+			/* ——— board fragment, bleeding off the right edge ——— */
+			.board {
+				position: absolute;
+				top: 50%;
+				right: -88px;
+				transform: translateY(-50%) rotate(-7deg);
+				display: grid;
+				grid-template-columns: repeat(4, 138px);
+				grid-auto-rows: 138px;
+				border: 10px solid #1d150e;
+				outline: 1px solid rgba(201, 160, 78, 0.35);
+				box-shadow:
+					0 30px 90px rgba(0, 0, 0, 0.65),
+					0 6px 24px rgba(0, 0, 0, 0.5);
+			}
+			.sq {
+				position: relative;
+				background: var(--sq-light);
+			}
+			.sq.d {
+				background: var(--sq-dark);
+			}
+			/* the site's per-square game counts */
+			.count {
+				position: absolute;
+				left: 10px;
+				bottom: 8px;
+				font-family: 'IBM Plex Mono', monospace;
+				font-weight: 600;
+				font-size: 19px;
+				letter-spacing: 0.02em;
+				color: rgba(20, 17, 10, 0.78);
+			}
+			.sq.d .count {
+				color: rgba(236, 229, 211, 0.85);
+			}
+			.count.hot {
+				color: #14110a;
+				background: var(--brass);
+				padding: 2px 9px;
+				border-radius: 999px;
+				box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+			}
+			.dot {
+				position: absolute;
+				top: 50%;
+				left: 50%;
+				width: 38px;
+				height: 38px;
+				transform: translate(-50%, -50%);
+				border-radius: 50%;
+				background: rgba(201, 160, 78, 0.55);
+			}
+			.piece {
+				position: absolute;
+				inset: 6px;
+				filter: drop-shadow(0 8px 14px rgba(0, 0, 0, 0.45));
+			}
+
+			/* board fades into the page at its left edge */
+			.board-fade {
+				position: absolute;
+				inset: 0;
+				background:
+					linear-gradient(to top, rgba(15, 22, 19, 0.92) 0%, transparent 24%),
+					linear-gradient(100deg, var(--bg) 44%, rgba(15, 22, 19, 0.55) 56%, transparent 70%);
+			}
+
+			/* ——— copy ——— */
+			.copy {
+				position: absolute;
+				left: 84px;
+				top: 0;
+				bottom: 0;
+				width: 660px;
+				display: flex;
+				flex-direction: column;
+				justify-content: center;
+				padding-bottom: 110px;
+			}
+			h1 {
+				font-size: 112px;
+				font-weight: 850;
+				font-variation-settings: 'opsz' 144;
+				letter-spacing: 0.04em;
+				line-height: 1.04;
+			}
+			h1 .amp {
+				color: var(--brass);
+				font-weight: 400;
+				font-style: italic;
+				margin: 0 0.04em;
+			}
+			.lede {
+				margin-top: 30px;
+				max-width: 560px;
+				font-size: 28px;
+				font-weight: 420;
+				line-height: 1.42;
+				color: var(--ink-dim);
+			}
+			.lede strong {
+				color: var(--ink);
+				font-weight: 620;
+			}
+			.site {
+				position: absolute;
+				left: 84px;
+				bottom: 48px;
+				display: flex;
+				flex-direction: column;
+				gap: 12px;
+				font-family: 'IBM Plex Mono', monospace;
+				font-weight: 500;
+				font-size: 21px;
+				letter-spacing: 0.14em;
+				color: var(--ink-dim);
+			}
+			.site .url {
+				color: var(--brass-bright);
+			}
+
+			/* film grain, same as the site */
+			.grain {
+				position: absolute;
+				inset: 0;
+				pointer-events: none;
+				opacity: 0.05;
+				background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+			}
+			/* brass hairline frame */
+			.frame {
+				position: absolute;
+				inset: 18px;
+				pointer-events: none;
+				border: 1px solid rgba(201, 160, 78, 0.28);
+			}
+		</style>
+	</head>
+	<body>
+		<div class="card">
+			<!--
+				4×4 fragment with correct checkerboard parity (dark square at top-left).
+				The rook sits on (row 2, col 2); with no other pieces on the fragment its
+				legal destinations are the rest of row 2 and column 2:
+				(2,1), (2,3), (2,4), (1,2), (3,2), (4,2) — each marked with a dot + game count.
+			-->
+			<div class="board">
+				<div class="sq d"></div>
+				<div class="sq"><span class="dot"></span><span class="count hot">×1</span></div>
+				<div class="sq d"></div>
+				<div class="sq"></div>
+
+				<div class="sq"><span class="dot"></span><span class="count">×3</span></div>
+				<div class="sq d">
+					<svg class="piece" viewBox="0 0 45 45">
+						<g fill="#fff" fill-rule="evenodd" stroke="#000" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5">
+							<path stroke-linecap="butt" d="M9 39h27v-3H9v3zm3-3v-4h21v4H12zm-1-22V9h4v2h5V9h5v2h5V9h4v5"/>
+							<path d="m34 14-3 3H14l-3-3"/>
+							<path stroke-linecap="butt" stroke-linejoin="miter" d="M31 17v12.5H14V17"/>
+							<path d="m31 29.5 1.5 2.5h-20l1.5-2.5"/>
+							<path fill="none" stroke-linejoin="miter" d="M11 14h23"/>
+						</g>
+					</svg>
+				</div>
+				<div class="sq"><span class="dot"></span><span class="count">×1,842</span></div>
+				<div class="sq d"><span class="dot"></span><span class="count">×41</span></div>
+
+				<div class="sq d"></div>
+				<div class="sq"><span class="dot"></span><span class="count">×214</span></div>
+				<div class="sq d"></div>
+				<div class="sq"></div>
+
+				<div class="sq"></div>
+				<div class="sq d"><span class="dot"></span><span class="count">×9</span></div>
+				<div class="sq"></div>
+				<div class="sq d"></div>
+			</div>
+			<div class="board-fade"></div>
+
+			<div class="copy">
+				<h1>Precedent<span class="amp">/</span><br />Chess</h1>
+				<p class="lede">
+					A move is legal only if someone played it from your exact position in a
+					<strong>real Lichess game</strong> — until a single game remains, and plays out its
+					real ending.
+				</p>
+			</div>
+
+			<div class="site">
+				<span class="url">precedent.jmw.nz</span>
+				<span>built on the Lichess open database</span>
+			</div>
+
+			<div class="grain"></div>
+			<div class="frame"></div>
+		</div>
+	</body>
+</html>

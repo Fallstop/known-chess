@@ -29,6 +29,39 @@
 <svelte:head>
 	<title>Precedent Chess: every move once lived</title>
 	<meta name="description" content="Chess where every move needs a precedent: it counts only if it was played from your exact position in a real game. Play until a single game remains, and watch its real ending." />
+	<link rel="canonical" href="https://precedent.jmw.nz/" />
+
+	<meta property="og:type" content="website" />
+	<meta property="og:site_name" content="Precedent Chess" />
+	<meta property="og:title" content="Precedent Chess: every move once lived" />
+	<meta property="og:description" content="Chess where every move needs a precedent: it counts only if it was played from your exact position in a real game. Play until a single game remains, and watch its real ending." />
+	<meta property="og:url" content="https://precedent.jmw.nz/" />
+	<meta property="og:image" content="https://precedent.jmw.nz/og.png" />
+	<meta property="og:image:width" content="1200" />
+	<meta property="og:image:height" content="630" />
+	<meta property="og:image:alt" content="Precedent Chess: a chessboard where each square shows how many real games played that move" />
+
+	<meta name="twitter:card" content="summary_large_image" />
+	<meta name="twitter:title" content="Precedent Chess: every move once lived" />
+	<meta name="twitter:description" content="Chess where every move needs a precedent: it counts only if it was played from your exact position in a real game." />
+	<meta name="twitter:image" content="https://precedent.jmw.nz/og.png" />
+
+	{@html `<script type="application/ld+json">${JSON.stringify({
+		'@context': 'https://schema.org',
+		'@type': 'WebApplication',
+		name: 'Precedent Chess',
+		url: 'https://precedent.jmw.nz/',
+		description:
+			'Chess where every move needs a precedent: it counts only if it was played from your exact position in a real Lichess game. Play until a single game remains, and watch its real ending.',
+		applicationCategory: 'GameApplication',
+		genre: 'Chess',
+		operatingSystem: 'Web',
+		browserRequirements: 'Requires JavaScript',
+		offers: { '@type': 'Offer', price: '0', priceCurrency: 'USD' },
+		image: 'https://precedent.jmw.nz/og.png',
+		author: { '@type': 'Person', name: 'Jasper M-W', url: 'https://jmw.nz' },
+		isBasedOn: 'https://database.lichess.org/'
+	})}</scr${''}ipt>`}
 </svelte:head>
 
 <div class="page">
