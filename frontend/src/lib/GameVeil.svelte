@@ -2,6 +2,7 @@
 	import type { SourcePlayer } from '$lib/api';
 	import { fmtMonth } from '$lib/format';
 	import type { KnownGame } from '$lib/game.svelte';
+	import posthog from 'posthog-js';
 
 	/** Overlay covering the board when the game is over, off the record, or errored. */
 	let { game }: { game: KnownGame } = $props();
@@ -60,6 +61,7 @@
 								href="https://lichess.org/{src.id}#{game.history.length}"
 								target="_blank"
 								rel="noopener"
+								onclick={() => posthog.capture('lichess_link_opened', { lichess_id: src.id, exact_match: src.exact })}
 							>
 								Open on Lichess <span class="arr">↗</span>
 							</a>
@@ -75,14 +77,20 @@
 	</div>
 {:else if game.phase === 'dry'}
 	<div class="veil">
-		<p class="veil-title">Precedent runs out.</p>
+		<p class="veil-title">Off the record.</p>
 		<p class="veil-note">No recorded game ever continued from this position.</p>
-		<button class="ctl primary" onclick={() => game.newGame()}>Play again</button>
+		<div class="veil-actions">
+			<button class="ctl" onclick={() => game.takeback()}>Take back</button>
+			<button class="ctl primary" onclick={() => game.newGame()}>New game</button>
+		</div>
 	</div>
 {:else if game.phase === 'error'}
 	<div class="veil">
 		<p class="veil-title">Lost the thread.</p>
-		<p class="veil-note">{game.errorMsg}</p>
+		<p class="veil-note">The archive didn't answer. Check your connection and try again.</p>
+		{#if game.errorMsg}
+			<p class="veil-err">{game.errorMsg}</p>
+		{/if}
 		<button class="ctl primary" onclick={() => game.retry()}>Retry</button>
 	</div>
 {/if}
@@ -129,6 +137,20 @@
 		color: var(--ink-dim);
 		font-size: 0.92rem;
 		max-width: 34ch;
+	}
+	.veil-err {
+		margin: 0 0 0.6rem;
+		font-family: var(--mono);
+		font-size: 0.66rem;
+		letter-spacing: 0.04em;
+		color: var(--ink-faint);
+		max-width: 40ch;
+	}
+	.veil-actions {
+		display: flex;
+		gap: 0.5rem;
+		flex-wrap: wrap;
+		justify-content: center;
 	}
 
 	/* ——— lichess trace card ——— */
@@ -329,7 +351,8 @@
 		.sk-line {
 			animation: none;
 		}
-		.card.found {
+		.card.found,
+		.veil {
 			animation: none;
 		}
 	}

@@ -1,4 +1,5 @@
 # known-chess configuration, shared by `kc-process` and `kc-server`.
+# Copy this file to `config.toml` and adjust the paths for your machine.
 #
 # `kc-process` downloads lichess dumps into [storage].downloads and folds each
 # one into the single combined book at [storage].book. `kc-server` reads that
@@ -7,10 +8,10 @@
 
 [storage]
 # Where downloaded lichess `.pgn.zst` dumps live.
-downloads = "/media/fallstop/SCRATCH/Chess"
+downloads = "/path/to/chess-data"
 # The combined book every dump is merged into. Defaults to
 # <downloads>/known.book if omitted.
-book = "/media/fallstop/SCRATCH/Chess/known.book"
+book = "/path/to/chess-data/known.book"
 
 [source]
 # The canonical list of available standard-rated monthly dumps.
@@ -20,7 +21,7 @@ list_url = "https://database.lichess.org/standard/list.txt"
 # Address kc-server binds to (overridable with the KC_BIND env var).
 bind = "0.0.0.0:8080"
 # Book to serve. Defaults to [storage].book; set only to serve a different file.
-# book = "/media/fallstop/SCRATCH/Chess/known.book"
+# book = "/path/to/chess-data/known.book"
 # Lichess API token (https://lichess.org/account/oauth/token, no scopes needed)
 # for /api/identify, which finds the real game behind a played-out line via the
 # opening explorer; it requires auth since 2026-03. Without it the frontend

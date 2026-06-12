@@ -1,12 +1,14 @@
 /* Theme tokens and page-wide chrome shared by every component. */
 
 :root {
+	color-scheme: dark;
 	--bg: #0f1613;
 	--panel: #151e19;
 	--panel-edge: #25322b;
 	--ink: #ece5d3;
-	--ink-dim: #9aa394;
-	--ink-faint: #5d685f;
+	--ink-dim: #a6af9f;
+	/* Faintest readable ink — keep well above 4.5:1 on --panel for small print. */
+	--ink-faint: #929d92;
 	--brass: #c9a04e;
 	--brass-bright: #e8c87c;
 	--brass-soft: rgba(201, 160, 78, 0.45);
@@ -61,6 +63,10 @@ body::after {
 	color: var(--brass-bright);
 	border-color: var(--brass-soft);
 }
+.ctl:focus-visible {
+	outline: 2px solid var(--brass-bright);
+	outline-offset: 2px;
+}
 .ctl:disabled {
 	opacity: 0.35;
 	cursor: default;
@@ -78,4 +84,14 @@ body::after {
 	background: var(--brass-bright);
 	border-color: var(--brass-bright);
 	color: #14110a;
+}
+
+/* visually hidden, available to screen readers */
+.sr-only {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	overflow: hidden;
+	clip-path: inset(50%);
+	white-space: nowrap;
 }

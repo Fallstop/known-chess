@@ -1,6 +1,7 @@
 import { Chess } from 'chess.js';
-import { identify, lookup, type KnownMove, type SourceGame } from '$lib/api';
+import { identify, lookup, type KnownMove, type LookupResponse, type SourceGame } from '$lib/api';
 import { moveSound, forcedSound, endSound } from '$lib/audio';
+import posthog from 'posthog-js';
 
 export const START = new Chess().fen();
 
@@ -56,6 +57,21 @@ export class KnownGame {
 	sourceState = $state<'idle' | 'searching' | 'found' | 'none'>('idle');
 	/** Bumped on new-game/takeback so in-flight lookups and autoplay timers abort. */
 	private gen = 0;
+	/** Cancels requests belonging to an abandoned gen; replaced on each bump. */
+	private aborter = new AbortController();
+	/**
+	 * Speculative lookups for moves the player is eyeing (hovered piece,
+	 * previewed continuation), keyed by UCI. Only valid for the current
+	 * position: cleared when a move lands or the game rewinds/resets.
+	 */
+	private speculative = new Map<string, Promise<LookupResponse> | undefined>();
+
+	private bump() {
+		this.gen++;
+		this.aborter.abort();
+		this.aborter = new AbortController();
+		this.speculative.clear();
+	}
 
 	chess = $derived(new Chess(this.fen));
 	turn = $derived(this.chess.turn());
@@ -111,7 +127,7 @@ export class KnownGame {
 
 	// ——— game loop ———————————————————————————————————————————————————————
 
-	private async step(g: number): Promise<void> {
+	private async step(g: number, prefetched?: Promise<LookupResponse>): Promise<void> {
 		const pos = new Chess(this.fen);
 		if (pos.isGameOver()) {
 			this.phase = 'over';
@@ -121,17 +137,37 @@ export class KnownGame {
 			if (this.lastEntry) this.total = this.lastEntry.count;
 			if (this.sound) endSound(pos.isCheckmate());
 			if (this.history.length) void this.findSource(g);
+			const resultType = pos.isCheckmate()
+				? 'checkmate'
+				: pos.isStalemate()
+					? 'stalemate'
+					: pos.isInsufficientMaterial()
+						? 'insufficient_material'
+						: 'draw';
+			posthog.capture('game_completed', {
+				result_type: resultType,
+				moves_played: this.history.length,
+				matching_games: this.lastEntry?.count ?? 0
+			});
 			return;
 		}
 		this.phase = 'loading';
 		let resp;
 		try {
-			resp = await lookup(this.fen);
-		} catch (e) {
+			resp = await (prefetched ?? lookup(this.fen, this.aborter.signal));
+		} catch (first) {
 			if (g !== this.gen) return;
-			this.phase = 'error';
-			this.errorMsg = e instanceof Error ? e.message : String(e);
-			return;
+			try {
+				// A dead prefetch shouldn't sink the game when a fresh lookup
+				// of the same position would succeed; give it one shot.
+				if (!prefetched) throw first;
+				resp = await lookup(this.fen, this.aborter.signal);
+			} catch (e) {
+				if (g !== this.gen) return;
+				this.phase = 'error';
+				this.errorMsg = e instanceof Error ? e.message : String(e);
+				return;
+			}
 		}
 		if (g !== this.gen) return;
 		this.known = resp.moves;
@@ -140,30 +176,74 @@ export class KnownGame {
 		if (this.known.length === 0) {
 			this.lastChoices = [];
 			this.phase = 'dry';
+			posthog.capture('position_off_record', {
+				moves_played: this.history.length
+			});
 			return;
 		}
 		if (this.known.length === 1) {
 			// Locked in: every remaining game continued the same way, so the
-			// archive plays the move itself after a beat.
+			// archive plays the move itself after a beat. Look up the position
+			// after that move now, so the next ply is ready when the beat ends.
 			this.lastChoices = [];
 			this.phase = 'forced';
+			const ahead = this.prefetch(this.known[0]);
 			await delay(800);
 			if (g !== this.gen) return;
 			this.applyMove(this.known[0], true);
-			return this.step(g);
+			return this.step(g, ahead);
 		}
 		this.lastChoices = this.known;
 		this.phase = 'choose';
+	}
+
+	/**
+	 * Start the lookup for the position a move leads to, so it can run while
+	 * the move's animation/beat plays. Undefined when the move ends the game
+	 * (step handles that without a lookup). Errors surface when awaited; the
+	 * stray catch only stops an unhandled rejection if the run is abandoned.
+	 */
+	private prefetch(mv: KnownMove): Promise<LookupResponse> | undefined {
+		const next = new Chess(this.fen);
+		next.move({
+			from: mv.uci.slice(0, 2),
+			to: mv.uci.slice(2, 4),
+			promotion: mv.uci.slice(4, 5) || undefined
+		});
+		if (next.isGameOver()) return undefined;
+		const p = lookup(next.fen(), this.aborter.signal);
+		p.catch(() => {});
+		return p;
+	}
+
+	/**
+	 * Warm the lookup for a candidate move the player seems interested in,
+	 * so choosing it lands on an already-fetched answer.
+	 */
+	warm(uci: string) {
+		if (this.phase !== 'choose' || this.speculative.has(uci)) return;
+		const mv = this.known.find((m) => m.uci === uci);
+		if (mv) this.speculative.set(uci, this.prefetch(mv));
 	}
 
 	/** Look up which real game the finished line replayed; quietly optional. */
 	private async findSource(g: number): Promise<void> {
 		this.sourceState = 'searching';
 		try {
-			const game = await identify(this.history.map((h) => h.uci));
+			const game = await identify(
+				this.history.map((h) => h.uci),
+				this.aborter.signal
+			);
 			if (g !== this.gen) return;
 			this.sourceGame = game;
 			this.sourceState = game ? 'found' : 'none';
+			if (game) {
+				posthog.capture('source_game_found', {
+					exact_match: game.exact,
+					lichess_id: game.id,
+					speed: game.speed
+				});
+			}
 		} catch {
 			// The link is a bonus; the veil works fine without it.
 			if (g !== this.gen) return;
@@ -183,6 +263,7 @@ export class KnownGame {
 		});
 		this.history = [...this.history, { san: res.san, uci: mv.uci, mover, count: mv.count, choices, preFen, from: res.from, to: res.to }];
 		this.fen = pos.fen();
+		this.speculative.clear();
 		if (this.sound) {
 			const capture = res.captured !== undefined;
 			if (auto) forcedSound(capture);
@@ -193,8 +274,17 @@ export class KnownGame {
 	choose(mv: KnownMove) {
 		if (this.phase !== 'choose') return;
 		this.previewUci = null;
+		posthog.capture('move_chosen', {
+			san: mv.san,
+			uci: mv.uci,
+			game_count: mv.count,
+			choices_available: this.known.length,
+			move_number: this.history.length + 1
+		});
+		// Grab any hover-warmed lookup before applyMove clears the cache.
+		const ahead = this.speculative.get(mv.uci);
 		this.applyMove(mv);
-		void this.step(this.gen);
+		void this.step(this.gen, ahead);
 	}
 
 	chooseUci(uci: string) {
@@ -203,7 +293,10 @@ export class KnownGame {
 	}
 
 	newGame() {
-		this.gen++;
+		this.bump();
+		posthog.capture('game_started', {
+			previous_moves: this.history.length
+		});
 		this.fen = START;
 		this.history = [];
 		this.known = [];
@@ -219,10 +312,14 @@ export class KnownGame {
 	/** Rewind to the most recent position where there was a genuine choice. */
 	takeback() {
 		if (!this.history.length || this.phase === 'loading') return;
-		this.gen++;
+		this.bump();
 		const h = [...this.history];
+		const movesBeforeTakeback = h.length;
 		let entry = h.pop()!;
 		while (h.length && entry.choices <= 1) entry = h.pop()!;
+		posthog.capture('takeback_used', {
+			moves_rewound: movesBeforeTakeback - h.length
+		});
 		this.history = h;
 		this.fen = entry.preFen;
 		this.previewUci = null;
@@ -232,7 +329,7 @@ export class KnownGame {
 	}
 
 	retry() {
-		this.gen++;
+		this.bump();
 		void this.step(this.gen);
 	}
 }

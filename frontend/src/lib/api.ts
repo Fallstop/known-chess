@@ -1,3 +1,13 @@
+import { PUBLIC_KC_API_URL } from '$env/static/public';
+
+/**
+ * Where the Rust server lives. Empty means same-origin: in dev, Vite proxies
+ * /api to it (see vite.config.ts). In the Cloudflare Pages deployment this is
+ * the backend's public origin, e.g. "https://api.example.com" (no trailing
+ * slash); the server sends permissive CORS headers, so cross-origin is fine.
+ */
+const API_BASE = PUBLIC_KC_API_URL;
+
 /** A move known to the book, as returned by the server. */
 export interface KnownMove {
 	/** Long algebraic, e.g. "e2e4" or "e7e8q". Feed straight into chess.js. */
@@ -21,21 +31,54 @@ export interface MetaResponse {
 	positions: number;
 }
 
+class HttpError extends Error {
+	constructor(
+		path: string,
+		readonly status: number
+	) {
+		super(`${path} failed: ${status}`);
+	}
+}
+
+const ATTEMPT_TIMEOUT_MS = 8000;
+const RETRIES = 2;
+
+/** Worth retrying: network blips, timeouts, server hiccups — not 4xx. */
+const transient = (e: unknown) => !(e instanceof HttpError) || e.status >= 500 || e.status === 429;
+
+const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/**
+ * POST with a per-attempt timeout and a couple of retries on transient
+ * failures. The caller's signal aborts the in-flight request and stops
+ * retrying (e.g. when the game it belonged to was reset).
+ */
+async function postJSON<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
+	for (let attempt = 0; ; attempt++) {
+		try {
+			const timeout = AbortSignal.timeout(ATTEMPT_TIMEOUT_MS);
+			const res = await fetch(API_BASE + path, {
+				method: 'POST',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify(body),
+				signal: signal ? AbortSignal.any([signal, timeout]) : timeout
+			});
+			if (!res.ok) throw new HttpError(path, res.status);
+			return (await res.json()) as T;
+		} catch (e) {
+			if (signal?.aborted || attempt >= RETRIES || !transient(e)) throw e;
+			await wait(300 * (attempt + 1));
+		}
+	}
+}
+
 /**
  * Ask the server which moves have been played from a given position.
  *
  * In dev, `/api` is proxied to the Rust server (see vite.config.ts).
  */
-export async function lookup(fen: string): Promise<LookupResponse> {
-	const res = await fetch('/api/lookup', {
-		method: 'POST',
-		headers: { 'content-type': 'application/json' },
-		body: JSON.stringify({ fen })
-	});
-	if (!res.ok) {
-		throw new Error(`lookup failed: ${res.status}`);
-	}
-	return res.json();
+export function lookup(fen: string, signal?: AbortSignal): Promise<LookupResponse> {
+	return postJSON<LookupResponse>('/api/lookup', { fen }, signal);
 }
 
 export interface SourcePlayer {
@@ -63,21 +106,14 @@ export interface SourceGame {
  * null when it can't be pinned down (no token configured, explorer hiccup,
  * or several games shared the line as deep as the explorer indexes).
  */
-export async function identify(ucis: string[]): Promise<SourceGame | null> {
-	const res = await fetch('/api/identify', {
-		method: 'POST',
-		headers: { 'content-type': 'application/json' },
-		body: JSON.stringify({ ucis })
-	});
-	if (!res.ok) {
-		throw new Error(`identify failed: ${res.status}`);
-	}
-	return (await res.json()).game;
+export async function identify(ucis: string[], signal?: AbortSignal): Promise<SourceGame | null> {
+	const resp = await postJSON<{ game: SourceGame | null }>('/api/identify', { ucis }, signal);
+	return resp.game;
 }
 
 /** Static facts about the loaded book (archive size, for the header). */
 export async function meta(): Promise<MetaResponse> {
-	const res = await fetch('/api/meta');
+	const res = await fetch(API_BASE + '/api/meta');
 	if (!res.ok) {
 		throw new Error(`meta failed: ${res.status}`);
 	}

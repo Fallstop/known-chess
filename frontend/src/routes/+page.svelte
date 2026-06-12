@@ -28,22 +28,39 @@
 
 <svelte:head>
 	<title>Precedent Chess: every move once lived</title>
-	<meta name="description" content="Chess where every move needs a precedent. It counts only if it has been played in a real game before. Narrow millions of games down to one." />
+	<meta name="description" content="Chess where every move needs a precedent: it counts only if it was played from your exact position in a real game. Play until a single game remains, and watch its real ending." />
 </svelte:head>
 
 <div class="page">
 	<header>
 		<h1>Precedent<span class="amp">/</span>Chess</h1>
 		<p class="lede">
-			In Precedent Chess, a move is legal only if it has precedent. Someone, somewhere, must have
-			played it in a real game. Every game here comes from real Lichess games that ended over the
-			board, and with each move the set of games matching yours gets smaller. When a single game is
-			left, precedent plays it out to the end.
+			Chess where a move is legal only if it has precedent: someone, somewhere, played it from
+			this exact position in a real Lichess game. The deeper you go, the fewer games ever got
+			there, until a single game remains and plays out its real ending.
 		</p>
 		{#if archivePositions !== null}
 			<p class="archive-size">{archivePositions.toLocaleString()} positions on record</p>
 		{/if}
 	</header>
+
+	<section class="how" aria-label="How it works">
+		<div class="how-step">
+			<span class="how-num" aria-hidden="true">01</span>
+			<h2>Pick a move</h2>
+			<p>Only moves actually played from this position are open to you. The small count on each square is how many games chose it.</p>
+		</div>
+		<div class="how-step">
+			<span class="how-num" aria-hidden="true">02</span>
+			<h2>Positions get rarer</h2>
+			<p>Each position is looked up in the record on its own, whatever the move order. The deeper you go, the fewer real games ever reached it.</p>
+		</div>
+		<div class="how-step">
+			<span class="how-num" aria-hidden="true">03</span>
+			<h2>One game remains</h2>
+			<p>Once a single game ever reached your position, precedent takes over and plays out its real ending, which you can open on Lichess.</p>
+		</div>
+	</section>
 
 	<main>
 		<section class="arena">
@@ -59,28 +76,32 @@
 					previewUci={game.previewUci}
 					dimInactive={game.phase === 'loading' || game.phase === 'forced'}
 					onMove={(uci) => game.chooseUci(uci)}
+					onPeek={(uci) => game.warm(uci)}
 				/>
 				<GameVeil {game} />
 			</div>
 			<PlayerPlate {game} color={bottomColor} />
 		</section>
 
-		<aside class="ledger">
+		<aside class="ledger" aria-label="Game ledger">
 			<RemainCounter total={game.total} />
 			<StatePanel {game} />
 			<Continuations {game} />
 			<MoveHistory history={game.history} fen={game.fen} />
 
-			<div class="controls">
+			<div class="controls" role="group" aria-label="Game controls">
 				<button class="ctl" onclick={() => game.newGame()}>New game</button>
 				<button
 					class="ctl"
 					onclick={() => game.takeback()}
 					disabled={game.history.length === 0 || game.phase === 'loading' || game.phase === 'forced'}
+					title="Rewind to your last real choice"
 				>
-					Takeback
+					Take back
 				</button>
-				<button class="ctl" onclick={() => (flipped = !flipped)}>Flip</button>
+				<button class="ctl" onclick={() => (flipped = !flipped)} title="View the board from the other side">
+					Flip board
+				</button>
 				<button class="ctl" class:off={!game.sound} onclick={() => (game.sound = !game.sound)} aria-pressed={game.sound}>
 					Sound {game.sound ? 'on' : 'off'}
 				</button>
@@ -89,10 +110,25 @@
 	</main>
 
 	<footer>
-		<p>
-			Moves are weighted by how often they were played; small print on each target square is how many
-			games went that way. Autoplayed moves appear <span class="auto-demo">dimmed</span> in the ledger.
+		<p class="foot-note">
+			Every count is real games that reached your exact position. Moves played for you by
+			precedent appear <span class="auto-demo">dimmed</span>.
 		</p>
+		<nav class="colophon" aria-label="Credits">
+			<span class="colophon-item">
+				<a href="https://database.lichess.org/" target="_blank" rel="noopener">Lichess open database</a>
+				<a class="lic" href="https://creativecommons.org/publicdomain/zero/1.0/" target="_blank" rel="noopener">CC0</a>
+			</span>
+			<span class="dot" aria-hidden="true">·</span>
+			<span class="colophon-item">
+				<a href="https://jmw.nz" target="_blank" rel="noopener">Jasper M-W</a>
+			</span>
+			<span class="dot" aria-hidden="true">·</span>
+			<span class="colophon-item">
+				<a href="https://github.com/Fallstop/known-chess" target="_blank" rel="noopener">Source</a>
+				<a class="lic" href="https://github.com/Fallstop/known-chess/blob/main/LICENSE" target="_blank" rel="noopener">MIT</a>
+			</span>
+		</nav>
 	</footer>
 </div>
 
@@ -143,6 +179,50 @@
 		color: var(--brass);
 	}
 
+	/* ——— how it works ——— */
+	.how {
+		display: grid;
+		grid-template-columns: repeat(3, 1fr);
+		gap: 1.6rem;
+		margin-bottom: 2.2rem;
+		padding: 1.1rem 0 1.3rem;
+		border-top: 1px solid var(--panel-edge);
+		border-bottom: 1px solid var(--panel-edge);
+	}
+	.how-step {
+		display: grid;
+		grid-template-columns: auto 1fr;
+		grid-template-rows: auto auto;
+		column-gap: 0.7rem;
+		row-gap: 0.25rem;
+		align-items: baseline;
+	}
+	.how-num {
+		grid-row: span 2;
+		align-self: start;
+		font-family: var(--mono);
+		font-size: 0.78rem;
+		font-weight: 600;
+		letter-spacing: 0.08em;
+		color: var(--brass);
+		border: 1px solid var(--brass-soft);
+		border-radius: 999px;
+		padding: 0.28rem 0.45rem;
+		line-height: 1;
+	}
+	.how-step h2 {
+		margin: 0;
+		font-size: 1.02rem;
+		font-weight: 700;
+		letter-spacing: -0.01em;
+	}
+	.how-step p {
+		margin: 0;
+		color: var(--ink-dim);
+		font-size: 0.85rem;
+		line-height: 1.5;
+	}
+
 	/* ——— layout ——— */
 	main {
 		display: grid;
@@ -170,10 +250,15 @@
 		header {
 			grid-template-columns: 1fr;
 			align-items: start;
-			margin-bottom: 1.8rem;
+			margin-bottom: 1.4rem;
 		}
 		h1 {
 			grid-row: auto;
+		}
+		.how {
+			grid-template-columns: 1fr;
+			gap: 1rem;
+			margin-bottom: 1.6rem;
 		}
 	}
 
@@ -184,10 +269,17 @@
 		}
 		header {
 			gap: 0.5rem 0;
-			margin-bottom: 1.4rem;
+			margin-bottom: 1.2rem;
 		}
 		.lede {
 			font-size: 0.92rem;
+		}
+		.how {
+			padding: 0.9rem 0 1rem;
+			margin-bottom: 1.2rem;
+		}
+		.how-step p {
+			font-size: 0.82rem;
 		}
 		main {
 			gap: 1.2rem;
@@ -225,18 +317,77 @@
 	}
 
 	footer {
+		display: flex;
+		flex-wrap: wrap;
+		justify-content: space-between;
+		align-items: baseline;
+		gap: 0.8rem 3rem;
 		margin-top: 2.5rem;
 		border-top: 1px solid var(--panel-edge);
-		padding-top: 1rem;
+		padding-top: 1.1rem;
 	}
-	footer p {
+	.foot-note {
 		margin: 0;
 		color: var(--ink-faint);
 		font-size: 0.82rem;
-		max-width: 72ch;
+		line-height: 1.5;
+		max-width: 52ch;
 	}
 	.auto-demo {
 		font-style: italic;
 		color: var(--ink-dim);
+	}
+	.colophon {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: baseline;
+		gap: 0.3rem 0.7rem;
+		margin-left: auto;
+		font-family: var(--mono);
+		font-size: 0.7rem;
+		letter-spacing: 0.05em;
+		white-space: nowrap;
+	}
+	.colophon-item {
+		display: inline-flex;
+		align-items: baseline;
+		gap: 0.4rem;
+	}
+	.colophon .dot {
+		color: var(--ink-faint);
+	}
+	.colophon a {
+		color: var(--ink-dim);
+		text-decoration: none;
+		transition: color 0.15s;
+	}
+	.colophon a:hover {
+		color: var(--brass-bright);
+	}
+	.colophon a:focus-visible {
+		outline: 2px solid var(--brass-bright);
+		outline-offset: 2px;
+		border-radius: 2px;
+	}
+	/* License tags: tiny pills instead of parenthesized links. */
+	.colophon a.lic {
+		font-size: 0.6rem;
+		letter-spacing: 0.08em;
+		color: var(--ink-faint);
+		border: 1px solid var(--panel-edge);
+		border-radius: 999px;
+		padding: 0.1rem 0.38rem;
+		line-height: 1.3;
+		transition: color 0.15s, border-color 0.15s;
+	}
+	.colophon a.lic:hover {
+		color: var(--brass-bright);
+		border-color: var(--brass-soft);
+	}
+	/* Stacked under the note on phones. */
+	@media (max-width: 560px) {
+		.colophon {
+			margin-left: 0;
+		}
 	}
 </style>

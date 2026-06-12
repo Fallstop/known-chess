@@ -20,7 +20,7 @@
 </script>
 
 <div class="counter">
-	<span class="label">games remain</span>
+	<span class="label">games reached this position</span>
 	<div class="counter-row">
 		<Odometer value={total} />
 		{#if delta}
@@ -79,6 +79,21 @@
 		100% {
 			opacity: 0;
 			transform: translateY(-0.9em);
+		}
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.delta {
+			animation: delta-fade 1.4s ease-out forwards;
+		}
+		@keyframes delta-fade {
+			0%,
+			60% {
+				opacity: 1;
+			}
+			100% {
+				opacity: 0;
+			}
 		}
 	}
 </style>

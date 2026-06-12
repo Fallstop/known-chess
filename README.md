@@ -144,18 +144,17 @@ npm run dev      # → http://localhost:5173, /api proxied to :8080
 
 ### With Docker
 
-A single image (root `Dockerfile`) runs both the Rust API and the SvelteKit
-frontend; the frontend is the only exposed port and proxies `/api` to the API
-internally (see `frontend/src/hooks.server.ts`). The book is **not** baked in;
-mount it and point `KC_BOOK_PATH` at it.
+The root `Dockerfile` builds the Rust API only; the frontend deploys
+separately to Cloudflare Pages (below). The book is **not** baked in; mount it
+and point `KC_BOOK_PATH` at it.
 
 ```sh
 # Build a book into ./data first (step 1), then:
 docker compose up --build
-# app → :3000  (book mounted from ./data/book.book)
+# API → :8080  (book mounted from ./data/book.book)
 ```
 
-### Deploy on CapRover
+### Deploy the backend on CapRover
 
 The repo ships a `captain-definition` pointing at the root `Dockerfile`, so the
 build context is the repo root. Deploy, then:
@@ -166,11 +165,27 @@ build context is the repo root. Deploy, then:
    `/captain/data/[app]/...`, or use an interactive container).
 3. **Set the env var** `KC_BOOK_PATH=/data/book.book` (the image default already
    points here, so this is only needed if you store the book elsewhere).
-4. **Container HTTP port**: `3000`. Enable HTTPS/websocket as desired.
+4. **Container HTTP port**: `8080`. Enable HTTPS.
 
-`kc-server` runs internally on `127.0.0.1:8080`; nothing but port `3000` is
-exposed. On boot the container fails fast with a clear message if the book is
-missing at `KC_BOOK_PATH`.
+The server answers `/api/*` with permissive CORS, so the Pages-hosted frontend
+can call it cross-origin.
+
+### Deploy the frontend on Cloudflare Pages
+
+The frontend builds with `@sveltejs/adapter-cloudflare`
+(see `frontend/wrangler.toml`).
+
+* **Via the dashboard**: connect the repo; root directory `frontend`, build
+  command `npm run build`, output directory `.svelte-kit/cloudflare`.
+* **Via wrangler**: `cd frontend && npm run build && npx wrangler pages deploy`.
+
+Set these in the Pages **build** environment (they are baked in at build time):
+
+| var | meaning |
+|-----|---------|
+| `PUBLIC_KC_API_URL` | backend origin, e.g. `https://api.example.com` (no trailing slash) |
+| `PUBLIC_POSTHOG_PROJECT_TOKEN` | PostHog project token |
+| `PUBLIC_POSTHOG_HOST` | PostHog UI host, e.g. `https://us.i.posthog.com` |
 
 ## API
 

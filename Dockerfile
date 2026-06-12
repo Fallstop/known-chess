@@ -1,9 +1,8 @@
-# Single-container build for known-chess, for CapRover (build context = repo root).
+# Backend-only build for known-chess, for CapRover (build context = repo root).
 #
-# Bundles two processes:
-#   - kc-server (Rust)  — serves /api on an internal port (8080)
-#   - the SvelteKit frontend (Node) — the only externally exposed port (3000),
-#     which proxies /api to kc-server (see frontend/src/hooks.server.ts).
+# Runs kc-server (Rust), which serves /api with permissive CORS. The frontend
+# is deployed separately to Cloudflare Pages (see frontend/wrangler.toml) and
+# calls this server cross-origin via PUBLIC_KC_API_URL.
 #
 # The book is NOT baked into the image. Mount it as a volume and point
 # KC_BOOK_PATH at it (defaults to /data/book.book).
@@ -27,39 +26,17 @@ RUN mkdir -p crates/shared/src crates/processor/src crates/server/src \
 COPY crates ./crates
 RUN touch crates/*/src/*.rs && cargo build --release --bin kc-server
 
-# --- Stage 2: build the SvelteKit frontend ----------------------------------
-FROM node:24-slim AS frontend-builder
-WORKDIR /app/frontend
-COPY frontend/package.json frontend/package-lock.json* ./
-RUN npm install
-COPY frontend/ ./
-RUN npm run build
-
-# --- Stage 3: runtime -------------------------------------------------------
-# Node base (Debian/glibc) so the glibc-linked Rust binary runs as-is.
-FROM node:24-slim AS runtime
+# --- Stage 2: runtime --------------------------------------------------------
+FROM debian:bookworm-slim AS runtime
 WORKDIR /app
-ENV NODE_ENV=production
 
-# Rust server binary.
 COPY --from=rust-builder /app/target/release/kc-server /usr/local/bin/kc-server
-
-# Frontend (built output + production deps).
-COPY --from=frontend-builder /app/frontend/build ./frontend/build
-COPY --from=frontend-builder /app/frontend/node_modules ./frontend/node_modules
-COPY --from=frontend-builder /app/frontend/package.json ./frontend/package.json
-
-COPY docker/start.sh /usr/local/bin/start.sh
-RUN chmod +x /usr/local/bin/start.sh
 
 # kc-server reads the book from KC_BOOK_PATH; mount a volume at /data and put
 # the book there (or set KC_BOOK_PATH to wherever it lives).
 ENV KC_BOOK_PATH=/data/book.book
-# kc-server's internal address; the frontend proxies /api here.
-ENV KC_BIND=127.0.0.1:8080
-ENV KC_SERVER_URL=http://127.0.0.1:8080
-# Port the frontend (and therefore the container) listens on. CapRover maps this.
-ENV PORT=3000
+# Port the container listens on. CapRover maps this.
+ENV KC_BIND=0.0.0.0:8080
 
-EXPOSE 3000
-CMD ["/usr/local/bin/start.sh"]
+EXPOSE 8080
+CMD ["kc-server"]

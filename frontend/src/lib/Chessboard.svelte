@@ -27,6 +27,11 @@
 		dimInactive?: boolean;
 		/** Called with the chosen move in UCI when the player completes a move. */
 		onMove: (uci: string) => void;
+		/**
+		 * Called with each candidate move (UCI) when the player shows interest
+		 * in a piece (hover or grab), so lookups can be warmed ahead of time.
+		 */
+		onPeek?: (uci: string) => void;
 	}
 
 	let {
@@ -38,7 +43,8 @@
 		checkSquare = null,
 		previewUci = null,
 		dimInactive = false,
-		onMove
+		onMove,
+		onPeek
 	}: Props = $props();
 
 	const FILES = 'abcdefgh';
@@ -193,6 +199,14 @@
 	const previewFrom = $derived(previewUci ? previewUci.slice(0, 2) : null);
 	const previewTo = $derived(previewUci ? previewUci.slice(2, 4) : null);
 
+	/** Player is eyeing this piece: surface its candidate moves for warming. */
+	function peek(sq: string) {
+		if (!onPeek || !interactive) return;
+		const tos = byFrom.get(sq);
+		if (!tos) return;
+		for (const opts of tos.values()) for (const mv of opts) onPeek(mv.uci);
+	}
+
 	function completeMove(from: string, to: string, fromDrag = false) {
 		const opts = byFrom.get(from)?.get(to);
 		if (!opts) return;
@@ -275,6 +289,8 @@
 		if (!pt) return;
 		const wasSelected = selected === sq;
 		selected = sq;
+		// Touch has no hover; grabbing the piece is the interest signal.
+		peek(sq);
 		drag = { from: sq, pointerId: e.pointerId, sx: pt.x, sy: pt.y, x: pt.x, y: pt.y, moved: false, wasSelected };
 		try {
 			(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
@@ -318,6 +334,30 @@
 	const cellPx = () => (boardEl ? boardEl.getBoundingClientRect().width / 8 : 0);
 
 	const sumCount = (opts: KnownMove[]) => opts.reduce((s, o) => s + o.count, 0);
+
+	// ——— square labels for keyboard & screen-reader play ————————————————
+
+	const PIECE_NAMES: Record<string, string> = {
+		p: 'pawn',
+		n: 'knight',
+		b: 'bishop',
+		r: 'rook',
+		q: 'queen',
+		k: 'king'
+	};
+	const pieceAt = $derived(new Map(pieces.map((p) => [p.square, p])));
+
+	function sqLabel(sq: string): string {
+		const p = pieceAt.get(sq);
+		let label = p ? `${sq}, ${p.color === 'w' ? 'white' : 'black'} ${PIECE_NAMES[p.type]}` : sq;
+		if (!interactive) return label;
+		if (targets.has(sq)) {
+			label += `. Move here, played in ${sumCount(targets.get(sq)!).toLocaleString()} games`;
+		} else if (byFrom.has(sq)) {
+			label += selected === sq ? '. Selected' : '. Has moves with precedent';
+		}
+		return label;
+	}
 </script>
 
 <div class="board" class:locked={!interactive} class:live={interactive} class:grabbing={drag?.moved} bind:this={boardEl}>
@@ -377,7 +417,7 @@
 			class:grab={interactive && byFrom.has(c.sq)}
 			class:point={interactive && targets.has(c.sq)}
 			style="--x:{xOf(c.f)};--y:{yOf(c.r)}"
-			aria-label={c.sq}
+			aria-label={sqLabel(c.sq)}
 			onpointerdown={(e) => pointerDown(e, c.sq)}
 			onpointermove={pointerMove}
 			onpointerup={pointerUp}
@@ -386,7 +426,10 @@
 				// Pointer handlers own mouse/touch; only keyboard "clicks" land here.
 				if (e.detail === 0) clickSquare(c.sq);
 			}}
-			onmouseenter={() => (hovered = c.sq)}
+			onmouseenter={() => {
+				hovered = c.sq;
+				peek(c.sq);
+			}}
 			onmouseleave={() => (hovered = null)}
 		></button>
 	{/each}
@@ -402,6 +445,7 @@
 			{#each promo.options as opt (opt.uci)}
 				<button
 					class="promo-opt"
+					aria-label="Promote to {PIECE_NAMES[opt.uci.slice(4)] ?? opt.uci.slice(4)}, played in {opt.count.toLocaleString()} games"
 					onclick={() => {
 						onMove(opt.uci);
 						promo = null;
@@ -537,10 +581,11 @@
 	.piece.lift img {
 		transform: translateY(-4%) scale(1.05);
 	}
-	/* pieces with no known move step back so the playable ones read instantly */
+	/* Pieces with no known move step back so the playable ones read instantly.
+	   Stays fully opaque: contrast pulls both colors toward grey uniformly,
+	   while opacity would let the square bleed through and dim unevenly. */
 	.piece.recede img {
-		opacity: 0.45;
-		filter: drop-shadow(0 1px 1px rgba(20, 12, 5, 0.25)) saturate(0.25) brightness(0.85);
+		filter: drop-shadow(0 1px 1px rgba(20, 12, 5, 0.25)) saturate(0.15) contrast(0.55) brightness(0.9);
 	}
 	.piece.dragged {
 		transition: none;
@@ -704,5 +749,25 @@
 		font-family: var(--mono);
 		font-size: 10px;
 		color: var(--ink-dim);
+	}
+	.promo-opt:focus-visible {
+		outline: 2px solid var(--brass-bright);
+		outline-offset: -2px;
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.piece,
+		.piece img,
+		.sq::after {
+			transition: none;
+		}
+		.piece.fresh img,
+		.piece.ghost,
+		.piece.ghost img {
+			animation: none;
+		}
+		.piece.ghost {
+			opacity: 0;
+		}
 	}
 </style>

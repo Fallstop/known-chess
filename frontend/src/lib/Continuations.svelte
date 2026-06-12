@@ -11,24 +11,38 @@
 	const visible = $derived(
 		(game.phase === 'choose' || game.phase === 'loading') && game.lastChoices.length > 0
 	);
+
+	const pct = (count: number) =>
+		game.total ? (count / game.total >= 0.01 ? Math.round((count / game.total) * 100) + '%' : '<1%') : '';
 </script>
 
 {#if visible}
-	<ol class="paths" class:stale={game.phase === 'loading'}>
+	<div class="paths-head" aria-hidden="true">
+		<span class="paths-label">moves with precedent</span>
+		<span class="paths-hint">games · share</span>
+	</div>
+	<ol class="paths" class:stale={game.phase === 'loading'} aria-label="Moves with precedent">
 		{#each game.lastChoices as mv (mv.uci)}
 			<li>
 				<button
 					class="path"
+					aria-label="Play {mv.san}, chosen in {mv.count.toLocaleString()} games{pct(mv.count) ? ` (${pct(mv.count)})` : ''}"
 					onclick={() => game.choose(mv)}
-					onmouseenter={() => (game.previewUci = mv.uci)}
+					onmouseenter={() => {
+						game.previewUci = mv.uci;
+						game.warm(mv.uci);
+					}}
 					onmouseleave={() => (game.previewUci = null)}
-					onfocus={() => (game.previewUci = mv.uci)}
+					onfocus={() => {
+						game.previewUci = mv.uci;
+						game.warm(mv.uci);
+					}}
 					onblur={() => (game.previewUci = null)}
 				>
 					<span class="psan">{mv.san}</span>
 					<span class="pbar"><span style="width:{(mv.count / game.lastChoices[0].count) * 100}%"></span></span>
 					<span class="pcount">{fmtCompact(mv.count)}</span>
-					<span class="ppct">{game.total ? (mv.count / game.total >= 0.01 ? Math.round((mv.count / game.total) * 100) + '%' : '<1%') : ''}</span>
+					<span class="ppct">{pct(mv.count)}</span>
 				</button>
 			</li>
 		{/each}
@@ -36,6 +50,27 @@
 {/if}
 
 <style>
+	.paths-head {
+		display: flex;
+		align-items: baseline;
+		justify-content: space-between;
+		gap: 0.6rem;
+		margin-bottom: -0.45rem;
+	}
+	.paths-label {
+		font-family: var(--mono);
+		font-size: 0.68rem;
+		letter-spacing: 0.18em;
+		text-transform: uppercase;
+		color: var(--ink-dim);
+	}
+	.paths-hint {
+		font-family: var(--mono);
+		font-size: 0.62rem;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+		color: var(--ink-faint);
+	}
 	.paths {
 		list-style: none;
 		margin: 0;

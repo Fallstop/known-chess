@@ -1,6 +1,6 @@
-# Single-container build matching the CapRover deployment (root Dockerfile):
-# kc-server (Rust API) and the SvelteKit frontend run together; the frontend is
-# the only exposed port and proxies /api to the server internally.
+# Backend-only build matching the CapRover deployment (root Dockerfile):
+# kc-server (Rust API) with permissive CORS. The frontend deploys separately
+# to Cloudflare Pages (see frontend/wrangler.toml).
 #
 # The book is mounted, not baked in. Generate one into ./data/book.book first:
 #   cargo run --release --bin kc-process -- --input <lichess.pgn.zst> --output data/book.book
@@ -18,4 +18,4 @@ services:
     volumes:
       - ./data:/data:ro
     ports:
-      - "3000:3000"
+      - "8080:8080"

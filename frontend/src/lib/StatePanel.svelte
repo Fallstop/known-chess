@@ -5,20 +5,21 @@
 	let { game }: { game: KnownGame } = $props();
 </script>
 
-<div class="state" class:forced={game.phase === 'forced'}>
+<div class="state" class:forced={game.phase === 'forced'} role="status" aria-live="polite">
 	{#if game.phase === 'loading'}
 		<span class="state-main dim">Searching for precedent<span class="ellip"></span></span>
 	{:else if game.phase === 'forced'}
 		<span class="state-main">Locked in</span>
-		<span class="state-sub">One precedent remains, so the line plays itself out.</span>
+		<span class="state-sub">Only one game continued from here. Precedent plays it out.</span>
 	{:else if game.phase === 'choose'}
 		<span class="state-main">{game.toMoveName} to move</span>
-		<span class="state-sub">{game.known.length} precedents diverge here</span>
+		<span class="state-sub">Pick one of {game.known.length} moves with precedent.</span>
 	{:else if game.phase === 'over' && game.result}
 		<span class="state-main">{game.result.title.replace(/\.$/, '')}</span>
 		<span class="state-sub">{game.result.detail}</span>
 	{:else if game.phase === 'dry'}
 		<span class="state-main">Off the record</span>
+		<span class="state-sub">No recorded game continued from this position.</span>
 	{:else}
 		<span class="state-main dim">—</span>
 	{/if}
@@ -68,6 +69,16 @@
 	@keyframes ellip {
 		to {
 			clip-path: inset(0 -0.2em 0 0);
+		}
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.state.forced {
+			animation: none;
+		}
+		.ellip::after {
+			animation: none;
+			clip-path: none;
 		}
 	}
 </style>

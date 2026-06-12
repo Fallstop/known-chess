@@ -1,0 +1,20 @@
+// vite.config.ts
+import { sveltekit } from "file:///Users/fallstop/Documents/projects/known-chess/frontend/node_modules/@sveltejs/kit/src/exports/vite/index.js";
+import { defineConfig } from "file:///Users/fallstop/Documents/projects/known-chess/frontend/node_modules/vite/dist/node/index.js";
+var vite_config_default = defineConfig({
+  plugins: [sveltekit()],
+  server: {
+    // Proxy API calls to the Rust server during development so the browser
+    // talks to a same-origin /api and we avoid CORS faff.
+    proxy: {
+      "/api": {
+        target: process.env.KC_SERVER_URL ?? "http://localhost:8080",
+        changeOrigin: true
+      }
+    }
+  }
+});
+export {
+  vite_config_default as default
+};
+//# sourceMappingURL=data:application/json;base64,ewogICJ2ZXJzaW9uIjogMywKICAic291cmNlcyI6IFsidml0ZS5jb25maWcudHMiXSwKICAic291cmNlc0NvbnRlbnQiOiBbImNvbnN0IF9fdml0ZV9pbmplY3RlZF9vcmlnaW5hbF9kaXJuYW1lID0gXCIvVXNlcnMvZmFsbHN0b3AvRG9jdW1lbnRzL3Byb2plY3RzL2tub3duLWNoZXNzL2Zyb250ZW5kXCI7Y29uc3QgX192aXRlX2luamVjdGVkX29yaWdpbmFsX2ZpbGVuYW1lID0gXCIvVXNlcnMvZmFsbHN0b3AvRG9jdW1lbnRzL3Byb2plY3RzL2tub3duLWNoZXNzL2Zyb250ZW5kL3ZpdGUuY29uZmlnLnRzXCI7Y29uc3QgX192aXRlX2luamVjdGVkX29yaWdpbmFsX2ltcG9ydF9tZXRhX3VybCA9IFwiZmlsZTovLy9Vc2Vycy9mYWxsc3RvcC9Eb2N1bWVudHMvcHJvamVjdHMva25vd24tY2hlc3MvZnJvbnRlbmQvdml0ZS5jb25maWcudHNcIjtpbXBvcnQgeyBzdmVsdGVraXQgfSBmcm9tICdAc3ZlbHRlanMva2l0L3ZpdGUnO1xuaW1wb3J0IHsgZGVmaW5lQ29uZmlnIH0gZnJvbSAndml0ZSc7XG5cbmV4cG9ydCBkZWZhdWx0IGRlZmluZUNvbmZpZyh7XG5cdHBsdWdpbnM6IFtzdmVsdGVraXQoKV0sXG5cdHNlcnZlcjoge1xuXHRcdC8vIFByb3h5IEFQSSBjYWxscyB0byB0aGUgUnVzdCBzZXJ2ZXIgZHVyaW5nIGRldmVsb3BtZW50IHNvIHRoZSBicm93c2VyXG5cdFx0Ly8gdGFsa3MgdG8gYSBzYW1lLW9yaWdpbiAvYXBpIGFuZCB3ZSBhdm9pZCBDT1JTIGZhZmYuXG5cdFx0cHJveHk6IHtcblx0XHRcdCcvYXBpJzoge1xuXHRcdFx0XHR0YXJnZXQ6IHByb2Nlc3MuZW52LktDX1NFUlZFUl9VUkwgPz8gJ2h0dHA6Ly9sb2NhbGhvc3Q6ODA4MCcsXG5cdFx0XHRcdGNoYW5nZU9yaWdpbjogdHJ1ZVxuXHRcdFx0fVxuXHRcdH1cblx0fVxufSk7XG4iXSwKICAibWFwcGluZ3MiOiAiO0FBQXVWLFNBQVMsaUJBQWlCO0FBQ2pYLFNBQVMsb0JBQW9CO0FBRTdCLElBQU8sc0JBQVEsYUFBYTtBQUFBLEVBQzNCLFNBQVMsQ0FBQyxVQUFVLENBQUM7QUFBQSxFQUNyQixRQUFRO0FBQUE7QUFBQTtBQUFBLElBR1AsT0FBTztBQUFBLE1BQ04sUUFBUTtBQUFBLFFBQ1AsUUFBUSxRQUFRLElBQUksaUJBQWlCO0FBQUEsUUFDckMsY0FBYztBQUFBLE1BQ2Y7QUFBQSxJQUNEO0FBQUEsRUFDRDtBQUNELENBQUM7IiwKICAibmFtZXMiOiBbXQp9Cg==

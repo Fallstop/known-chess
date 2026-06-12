@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { HistEntry } from '$lib/game.svelte';
 	import { fmtCompact } from '$lib/format';
+	import posthog from 'posthog-js';
 
 	let { history, fen }: { history: HistEntry[]; fen: string } = $props();
 
@@ -39,6 +40,7 @@
 				ta.remove();
 			}
 		}
+		posthog.capture('fen_copied', { move_count: history.length });
 		copied = true;
 		clearTimeout(copyTimer);
 		copyTimer = setTimeout(() => (copied = false), 1400);
@@ -57,6 +59,10 @@
 			<p class="hist-empty">The opening ledger is blank. Make a move.</p>
 		{:else}
 			<table>
+				<caption class="sr-only">
+					Moves played so far. Next to each move: how many recorded games played it from that
+					position.
+				</caption>
 				<tbody>
 					{#each moveRows as row (row.n)}
 						<tr>
@@ -110,9 +116,14 @@
 		cursor: pointer;
 		transition: color 0.15s, border-color 0.15s;
 	}
-	.copy-fen:hover {
+	.copy-fen:hover,
+	.copy-fen:focus-visible {
 		color: var(--brass-bright);
 		border-color: var(--brass-soft);
+	}
+	.copy-fen:focus-visible {
+		outline: 2px solid var(--brass-bright);
+		outline-offset: 2px;
 	}
 	.copy-fen.done {
 		color: var(--brass-bright);

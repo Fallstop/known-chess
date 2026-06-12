@@ -1,30 +1,48 @@
-import type { Handle } from '@sveltejs/kit';
-
-// Where the Rust `kc-server` listens. In the single-container deployment (see
-// the root Dockerfile) both processes share localhost, so this defaults to the
-// server's internal port. Override with KC_SERVER_URL if it lives elsewhere.
-const KC_SERVER_URL = process.env.KC_SERVER_URL ?? 'http://localhost:8080';
+import type { Handle, HandleServerError } from '@sveltejs/kit';
 
 /**
- * Proxy `/api/*` to the Rust server.
+ * Reverse proxy for PostHog — routes /ingest/* to PostHog's servers so the
+ * analytics requests are same-origin and survive ad blockers. Runs in the
+ * Cloudflare Pages worker.
  *
- * In dev, Vite proxies `/api` for us (see vite.config.ts). The production Node
- * adapter has no such proxy, so the browser's same-origin `/api` calls would
- * otherwise 404. This handle forwards them to `kc-server` instead, keeping the
- * frontend the only externally exposed port.
+ * The Rust API is NOT proxied here: the browser calls it directly at
+ * PUBLIC_KC_API_URL (see src/lib/api.ts); the server allows CORS. In dev,
+ * Vite proxies /api instead (see vite.config.ts).
  */
 export const handle: Handle = async ({ event, resolve }) => {
-	if (event.url.pathname.startsWith('/api/')) {
-		const target = KC_SERVER_URL + event.url.pathname + event.url.search;
-		const method = event.request.method;
-		const init: RequestInit = {
-			method,
-			headers: { 'content-type': event.request.headers.get('content-type') ?? 'application/json' }
-		};
-		if (method !== 'GET' && method !== 'HEAD') {
-			init.body = await event.request.arrayBuffer();
-		}
-		return fetch(target, init);
+	const { pathname } = event.url;
+
+	if (pathname.startsWith('/ingest')) {
+		const useAssetHost =
+			pathname.startsWith('/ingest/static/') || pathname.startsWith('/ingest/array/');
+		const hostname = useAssetHost ? 'us-assets.i.posthog.com' : 'us.i.posthog.com';
+
+		const url = new URL(event.request.url);
+		url.protocol = 'https:';
+		url.hostname = hostname;
+		url.port = '443';
+		url.pathname = pathname.replace(/^\/ingest/, '');
+
+		const headers = new Headers(event.request.headers);
+		headers.set('host', hostname);
+		headers.set('accept-encoding', '');
+
+		const clientIp =
+			event.request.headers.get('x-forwarded-for') || event.getClientAddress();
+		if (clientIp) headers.set('x-forwarded-for', clientIp);
+
+		return fetch(url.toString(), {
+			method: event.request.method,
+			headers,
+			body: event.request.body,
+			// @ts-expect-error duplex required for streaming request bodies
+			duplex: 'half'
+		});
 	}
+
 	return resolve(event);
+};
+
+export const handleError: HandleServerError = async ({ error, message }) => {
+	return { message };
 };

@@ -19,6 +19,9 @@ node_modules
 *.pgn.zst
 *.book
 
+# Local config (copy config.example.toml to config.toml)
+/config.toml
+
 # Editor / OS
 .DS_Store
 *.swp
