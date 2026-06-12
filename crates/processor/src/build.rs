@@ -95,7 +95,7 @@ pub fn run(cfg: &Config, targets: &[String], opts: &BuildOpts) -> Result<()> {
         0 => std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4),
         n => n,
     };
-    let (runs, spill_paths, tallies) = process_inputs(&inputs, opts, jobs, &output)?;
+    let (spill_paths, tallies) = process_inputs(&inputs, opts, jobs, &output)?;
     for ((path, dump_name), (games, skipped)) in inputs.iter().zip(&tallies) {
         tracing::info!(input = %path.display(), games, skipped, "processed dump");
         if !sources.contains(dump_name) {
@@ -127,10 +127,11 @@ pub fn run(cfg: &Config, targets: &[String], opts: &BuildOpts) -> Result<()> {
     olds.extend(existing.as_ref());
     olds.extend(&spill_books);
 
-    let estimate = olds.iter().map(|b| b.position_count()).sum::<u64>()
-        + runs.iter().map(|r| r.len() as u64).sum::<u64>();
+    // Every run was spilled to disk during processing, so the merge reads them
+    // all as mmap'd `olds`; nothing is held in RAM as an in-memory run.
+    let estimate = olds.iter().map(|b| b.position_count()).sum::<u64>();
     let pb = position_bar(estimate);
-    let stats = write_merged_many_progress(&olds, &runs, &mut file, |written| {
+    let stats = write_merged_many_progress(&olds, &[], &mut file, |written| {
         pb.set_position(written);
     })
     .with_context(|| format!("writing {}", tmp.display()))?;
@@ -274,16 +275,17 @@ fn catch_up_inputs(cfg: &Config, manifest_path: &Path, fresh: bool) -> Result<Ve
 
 /// One sorted run per worker, the on-disk spill-book paths, and per-input
 /// (kept, skipped) game tallies — everything [`process_inputs`] hands back.
-type Processed = (Vec<shared::SortedEntries>, Vec<PathBuf>, Vec<(u64, u64)>);
+type Processed = (Vec<PathBuf>, Vec<(u64, u64)>);
 
 /// Parse every input with a pool of parser threads. The main thread
 /// decompresses each dump and splits it into batches of whole games; workers
-/// replay games into per-thread builders, sorted into runs once the channel
-/// drains. A worker whose builder grows past its share of `max_mem_bytes`
-/// spills it to an on-disk book (named off `spill_base`) and starts a fresh
-/// one, bounding peak RAM regardless of how many dumps are processed at once.
-/// Returns one sorted run per worker, the spill-book paths, and per-input
-/// (kept, skipped) tallies in input order.
+/// replay games into per-thread builders. A worker whose builder grows past its
+/// share of `max_mem_bytes` spills it to an on-disk book (named off
+/// `spill_base`) and starts a fresh one, bounding peak RAM regardless of how
+/// many dumps are processed at once. When the channel drains each worker spills
+/// its tail too, so no run is ever held in RAM — the final merge reads every run
+/// as an mmap'd book. Returns the spill-book paths and per-input (kept, skipped)
+/// tallies in input order.
 fn process_inputs(
     inputs: &[(PathBuf, String)],
     opts: &BuildOpts,
@@ -307,10 +309,10 @@ fn process_inputs(
     let (tx, rx) = mpsc::sync_channel::<(usize, Vec<u8>)>(jobs * 2);
     let rx = Mutex::new(rx);
 
-    let runs = std::thread::scope(|scope| -> Result<Vec<shared::SortedEntries>> {
+    std::thread::scope(|scope| -> Result<()> {
         let workers: Vec<_> = (0..jobs)
             .map(|_| {
-                scope.spawn(|| -> Result<shared::SortedEntries> {
+                scope.spawn(|| -> Result<()> {
                     let mut builder = BookBuilder::new();
                     loop {
                         // Hold the lock only to receive; parsing runs unlocked.
@@ -331,7 +333,13 @@ fn process_inputs(
                             spill_builder(&mut builder, spill_base, &spill_counter, &spill_paths)?;
                         }
                     }
-                    Ok(builder.into_sorted())
+                    // Flush the tail to disk too, so the final merge reads every
+                    // run as an mmap'd book and holds none in RAM. Returning these
+                    // as in-memory runs made all workers materialize a sorted Vec
+                    // beside their still-live HashMap at once — a multi-GB spike
+                    // that the per-worker budget never accounted for.
+                    spill_builder(&mut builder, spill_base, &spill_counter, &spill_paths)?;
+                    Ok(())
                 })
             })
             .collect();
@@ -340,19 +348,19 @@ fn process_inputs(
             dispatch_file(path, file_idx, &tx, opts.limit, &tallies[file_idx].0)
                 .with_context(|| format!("processing {}", path.display()))?;
         }
-        drop(tx); // close the channel so workers finish and sort their runs
+        drop(tx); // close the channel so workers drain and spill their tails
 
-        workers
-            .into_iter()
-            .map(|w| w.join().expect("parser thread panicked"))
-            .collect()
+        for w in workers {
+            w.join().expect("parser thread panicked")?;
+        }
+        Ok(())
     })?;
 
     let tallies = tallies
         .iter()
         .map(|(kept, skipped)| (kept.load(Ordering::Relaxed), skipped.load(Ordering::Relaxed)))
         .collect();
-    Ok((runs, spill_paths.into_inner().unwrap(), tallies))
+    Ok((spill_paths.into_inner().unwrap(), tallies))
 }
 
 /// Drain a worker's builder to an on-disk book (so its RAM is freed) and record
