@@ -132,6 +132,7 @@ curl -s localhost:8080/api/lookup -H 'content-type: application/json' \
 |-----|---------|---------|
 | `KC_CONFIG` | nearest `config.toml` | path to the config file |
 | `KC_BIND` | `[server].bind` | listen address (overrides config) |
+| `KC_SITE_URL` | `[server].site_url` | frontend URL; `GET /` redirects there |
 | `RUST_LOG` | `info` | log filter |
 
 ### 3. Run the frontend
@@ -172,19 +173,19 @@ can call it cross-origin.
 
 ### Deploy the frontend on Cloudflare Pages
 
-The frontend builds with `@sveltejs/adapter-cloudflare`
-(see `frontend/wrangler.toml`).
+The frontend builds with `@sveltejs/adapter-cloudflare`. Connect the repo in
+the Pages dashboard: root directory `frontend`, build command `pnpm build`,
+output directory `.svelte-kit/cloudflare`. All config lives in the dashboard —
+do **not** add a `wrangler.toml`; its presence makes Pages source settings
+from the file and silently ignore the dashboard's variables.
 
-* **Via the dashboard**: connect the repo; root directory `frontend`, build
-  command `pnpm build`, output directory `.svelte-kit/cloudflare`.
-* **Via wrangler**: `cd frontend && pnpm build && pnpm dlx wrangler pages deploy`.
-
-Set these in the Pages **build** environment (they are baked in at build time):
+Set these in the Pages **build** environment (Settings → Builds → Variables;
+they are baked in at build time, so changing one needs a redeploy):
 
 | var | meaning |
 |-----|---------|
 | `PUBLIC_KC_API_URL` | backend origin, e.g. `https://api.example.com` (no trailing slash) |
-| `PUBLIC_POSTHOG_PROJECT_TOKEN` | PostHog project token |
+| `PUBLIC_POSTHOG_PROJECT_TOKEN` | PostHog project token (empty disables analytics) |
 | `PUBLIC_POSTHOG_HOST` | PostHog UI host, e.g. `https://us.i.posthog.com` |
 
 ## API

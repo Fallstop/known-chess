@@ -1,9 +1,0 @@
-# Cloudflare Pages config. Deploy with:
-#   npm run build && npx wrangler pages deploy
-# Or connect the repo in the Pages dashboard: build command `npm run build`,
-# build output `.svelte-kit/cloudflare`, root directory `frontend`. Set
-# PUBLIC_KC_API_URL (and the PostHog vars) in the Pages build environment —
-# they are baked in at build time.
-name = "known-chess"
-compatibility_date = "2026-01-01"
-pages_build_output_dir = ".svelte-kit/cloudflare"

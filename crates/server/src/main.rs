@@ -17,7 +17,14 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use axum::{extract::State, http::StatusCode, response::IntoResponse, routing::get, routing::post, Json, Router};
+use axum::{
+    extract::State,
+    http::StatusCode,
+    response::{IntoResponse, Redirect, Response},
+    routing::get,
+    routing::post,
+    Json, Router,
+};
 use memmap2::Mmap;
 use serde::{Deserialize, Serialize};
 use shakmaty::fen::Fen;
@@ -36,6 +43,8 @@ struct AppState {
     /// Bearer token for explorer.lichess.ovh (it requires authentication).
     /// `None` disables `/api/identify`: it then always answers `game: null`.
     lichess_token: Option<Arc<str>>,
+    /// Public URL of the frontend; `GET /` redirects there when set.
+    site_url: Option<Arc<str>>,
 }
 
 #[tokio::main]
@@ -50,11 +59,16 @@ async fn main() -> Result<()> {
     // `KC_BOOK_PATH` (set by the deployment image) points straight at the book
     // and lets the server run with no `config.toml`. Only fall back to loading
     // config (and only require it to exist) when the env var is absent.
-    let (book_path, cfg_bind, cfg_token) = match std::env::var_os("KC_BOOK_PATH") {
-        Some(p) => (PathBuf::from(p), None, None),
+    let (book_path, cfg_bind, cfg_token, cfg_site) = match std::env::var_os("KC_BOOK_PATH") {
+        Some(p) => (PathBuf::from(p), None, None, None),
         None => {
             let cfg = Config::load(std::env::var_os("KC_CONFIG").map(PathBuf::from).as_deref())?;
-            (cfg.server_book_path(), Some(cfg.server.bind), cfg.server.lichess_token)
+            (
+                cfg.server_book_path(),
+                Some(cfg.server.bind),
+                cfg.server.lichess_token,
+                cfg.server.site_url,
+            )
         }
     };
     let book =
@@ -67,9 +81,15 @@ async fn main() -> Result<()> {
         .or(cfg_token)
         .map(Arc::from);
     tracing::info!(enabled = lichess_token.is_some(), "lichess game identification");
-    let state = AppState { book: Arc::new(book), lichess_token };
+    let site_url: Option<Arc<str>> = std::env::var("KC_SITE_URL")
+        .ok()
+        .filter(|u| !u.is_empty())
+        .or(cfg_site)
+        .map(Arc::from);
+    let state = AppState { book: Arc::new(book), lichess_token, site_url };
 
     let app = Router::new()
+        .route("/", get(root))
         .route("/health", get(|| async { "ok" }))
         .route("/api/meta", get(meta))
         .route("/api/lookup", post(lookup))
@@ -103,6 +123,15 @@ fn open_book(path: &Path) -> Result<Book<Mmap>> {
 async fn shutdown_signal() {
     let _ = tokio::signal::ctrl_c().await;
     tracing::info!("shutting down");
+}
+
+/// The API has no UI; send people who land on the bare origin to the site.
+/// Temporary (307) so a stale URL isn't cached forever by browsers.
+async fn root(State(state): State<AppState>) -> Response {
+    match state.site_url.as_deref() {
+        Some(url) => Redirect::temporary(url).into_response(),
+        None => "known-chess API — see /api/lookup, /api/meta".into_response(),
+    }
 }
 
 #[derive(Serialize)]

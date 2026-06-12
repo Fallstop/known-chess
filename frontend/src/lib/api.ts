@@ -1,10 +1,12 @@
 import { PUBLIC_KC_API_URL } from '$env/static/public';
 
 /**
- * Where the Rust server lives. Empty means same-origin: in dev, Vite proxies
- * /api to it (see vite.config.ts). In the Cloudflare Pages deployment this is
- * the backend's public origin, e.g. "https://api.example.com" (no trailing
- * slash); the server sends permissive CORS headers, so cross-origin is fine.
+ * Where the Rust server lives, baked in at build time. Empty means
+ * same-origin: in dev, Vite proxies /api to it (see vite.config.ts). In the
+ * Cloudflare Pages deployment, set PUBLIC_KC_API_URL in the dashboard's
+ * BUILD environment to the backend's public origin, e.g.
+ * "https://api.example.com" (no trailing slash); the server sends permissive
+ * CORS headers, so cross-origin is fine.
  */
 const API_BASE = PUBLIC_KC_API_URL;
 

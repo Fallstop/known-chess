@@ -28,3 +28,6 @@ bind = "0.0.0.0:8080"
 # simply never shows a "watch the original game" link. Prefer the
 # KC_LICHESS_TOKEN env var; don't commit a real token here.
 # lichess_token = "lip_..."
+# Public URL of the frontend; GET / redirects there (overridable with
+# KC_SITE_URL). Without it the root answers a plain-text pointer to /api.
+# site_url = "https://example.com"

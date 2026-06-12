@@ -86,6 +86,11 @@ pub struct Server {
     /// always answers "unknown". Overridable with `KC_LICHESS_TOKEN`.
     #[serde(default)]
     pub lichess_token: Option<String>,
+    /// Public URL of the frontend; `GET /` redirects there. Without it the
+    /// root answers a plain-text pointer to `/api`. Overridable with
+    /// `KC_SITE_URL`.
+    #[serde(default)]
+    pub site_url: Option<String>,
 }
 
 impl Default for Server {
@@ -94,6 +99,7 @@ impl Default for Server {
             bind: default_bind(),
             book: None,
             lichess_token: None,
+            site_url: None,
         }
     }
 }

@@ -3,6 +3,7 @@ import { PUBLIC_POSTHOG_PROJECT_TOKEN, PUBLIC_POSTHOG_HOST } from '$env/static/p
 import type { HandleClientError } from '@sveltejs/kit';
 
 export async function init() {
+	if (!PUBLIC_POSTHOG_PROJECT_TOKEN) return;
 	posthog.init(PUBLIC_POSTHOG_PROJECT_TOKEN, {
 		api_host: '/ingest',
 		ui_host: PUBLIC_POSTHOG_HOST,

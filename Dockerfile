@@ -37,6 +37,7 @@ COPY --from=rust-builder /app/target/release/kc-server /usr/local/bin/kc-server
 ENV KC_BOOK_PATH=/data/book.book
 # Port the container listens on. CapRover maps this.
 ENV KC_BIND=0.0.0.0:8080
+# Set KC_SITE_URL to the frontend's public URL to have GET / redirect there.
 
 EXPOSE 8080
 CMD ["kc-server"]
