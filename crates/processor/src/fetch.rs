@@ -96,7 +96,7 @@ pub fn cmd_list(cfg: &Config, query: Option<&str>) -> Result<()> {
     // "Processed" = folded into the combined book, per its .sources manifest.
     let merged = cfg.read_manifest();
 
-    println!("{:<9}  {:<11}  {:<10}  {}", "MONTH", "DOWNLOADED", "PROCESSED", "SIZE");
+    println!("{:<9}  {:<11}  {:<10}  SIZE", "MONTH", "DOWNLOADED", "PROCESSED");
     let (mut n_dl, mut n_proc) = (0u32, 0u32);
     for e in &filtered {
         let dump = cfg.download_path(&e.filename);

@@ -51,18 +51,16 @@ const transient = (e: unknown) => !(e instanceof HttpError) || e.status >= 500 |
 const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 /**
- * POST with a per-attempt timeout and a couple of retries on transient
+ * Fetch with a per-attempt timeout and a couple of retries on transient
  * failures. The caller's signal aborts the in-flight request and stops
  * retrying (e.g. when the game it belonged to was reset).
  */
-async function postJSON<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
+async function fetchJSON<T>(path: string, init: RequestInit, signal?: AbortSignal): Promise<T> {
 	for (let attempt = 0; ; attempt++) {
 		try {
 			const timeout = AbortSignal.timeout(ATTEMPT_TIMEOUT_MS);
 			const res = await fetch(API_BASE + path, {
-				method: 'POST',
-				headers: { 'content-type': 'application/json' },
-				body: JSON.stringify(body),
+				...init,
 				signal: signal ? AbortSignal.any([signal, timeout]) : timeout
 			});
 			if (!res.ok) throw new HttpError(path, res.status);
@@ -74,13 +72,29 @@ async function postJSON<T>(path: string, body: unknown, signal?: AbortSignal): P
 	}
 }
 
+function postJSON<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
+	return fetchJSON<T>(
+		path,
+		{
+			method: 'POST',
+			headers: { 'content-type': 'application/json' },
+			body: JSON.stringify(body)
+		},
+		signal
+	);
+}
+
 /**
  * Ask the server which moves have been played from a given position.
+ *
+ * Sent as a GET so it's a CORS "simple request" — no OPTIONS preflight per
+ * lookup — and so the browser HTTP cache can serve repeated positions
+ * (the server marks lookups cacheable for a day).
  *
  * In dev, `/api` is proxied to the Rust server (see vite.config.ts).
  */
 export function lookup(fen: string, signal?: AbortSignal): Promise<LookupResponse> {
-	return postJSON<LookupResponse>('/api/lookup', { fen }, signal);
+	return fetchJSON<LookupResponse>(`/api/lookup?fen=${encodeURIComponent(fen)}`, {}, signal);
 }
 
 export interface SourcePlayer {

@@ -10,6 +10,26 @@
 	const fmtName = (p: SourcePlayer) => p.name || 'Anonymous';
 </script>
 
+{#snippet crown()}
+	<!-- Lucide "crown", inlined — no icon library in this project. -->
+	<svg
+		class="crown"
+		role="img"
+		aria-label="Winner"
+		viewBox="0 0 24 24"
+		fill="none"
+		stroke="currentColor"
+		stroke-width="2"
+		stroke-linecap="round"
+		stroke-linejoin="round"
+	>
+		<path
+			d="M11.562 3.266a.5.5 0 0 1 .876 0L15.39 8.87a1 1 0 0 0 1.516.294L21.183 5.5a.5.5 0 0 1 .798.519l-2.834 10.246a1 1 0 0 1-.956.734H5.81a1 1 0 0 1-.957-.734L2.02 6.02a.5.5 0 0 1 .798-.519l4.276 3.664a1 1 0 0 0 1.516-.294z"
+		/>
+		<path d="M5 21h14" />
+	</svg>
+{/snippet}
+
 {#if game.phase === 'over' && game.result}
 	<div class="veil">
 		<p class="veil-title">{game.result.title}</p>
@@ -40,13 +60,13 @@
 							<span class="disc white" aria-hidden="true"></span>
 							<span class="pname">{fmtName(src.white)}</span>
 							{#if src.white.rating}<span class="elo">{src.white.rating}</span>{/if}
-							{#if src.winner === 'white'}<span class="badge">♚ won · 1–0</span>{/if}
+							{#if src.winner === 'white'}{@render crown()}{/if}
 						</span>
 						<span class="side" class:won={src.winner === 'black'}>
 							<span class="disc black" aria-hidden="true"></span>
 							<span class="pname">{fmtName(src.black)}</span>
 							{#if src.black.rating}<span class="elo">{src.black.rating}</span>{/if}
-							{#if src.winner === 'black'}<span class="badge">♚ won · 0–1</span>{/if}
+							{#if src.winner === 'black'}{@render crown()}{/if}
 						</span>
 						{#if src.winner === null}
 							<span class="side draw"><span class="disc half" aria-hidden="true"></span>Drawn</span>
@@ -54,7 +74,7 @@
 
 						<div class="cta">
 							<span class="cta-meta">
-								{src.speed ? `${src.speed} game` : 'Game'}{src.month ? ` · ${fmtMonth(src.month)}` : ''}
+								{src.speed ?? 'Game'}{src.month ? ` · ${fmtMonth(src.month)}` : ''}
 							</span>
 							<a
 								class="cta-btn"
@@ -222,19 +242,13 @@
 		font-size: 0.72rem;
 		color: var(--ink-faint);
 	}
-	.badge {
+	/* Plain glyph, no pill — only the Lichess link should read as clickable. */
+	.crown {
 		margin-left: auto;
-		font-family: var(--mono);
-		font-size: 0.6rem;
-		font-weight: 600;
-		letter-spacing: 0.1em;
-		text-transform: uppercase;
+		width: 16px;
+		height: 16px;
+		flex: none;
 		color: var(--brass-bright);
-		background: var(--brass-tint);
-		border: 1px solid var(--brass-soft);
-		border-radius: 999px;
-		padding: 0.12rem 0.45rem;
-		white-space: nowrap;
 	}
 	.side.draw {
 		font-weight: 500;

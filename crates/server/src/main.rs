@@ -2,8 +2,9 @@
 //!
 //! The frontend owns the game state (it has a full chess engine in the
 //! browser). For each position it asks this server "which moves have been played
-//! from here, and how often?" via [`POST /api/lookup`]. The server hashes the
-//! position, binary-searches the book, and returns the legal continuations.
+//! from here, and how often?" via `/api/lookup` (GET with a `fen` query
+//! parameter, or POST with a JSON body). The server hashes the position,
+//! binary-searches the book, and returns the legal continuations.
 //!
 //! The book to load comes from `KC_BOOK_PATH` if set (the deployment path,
 //! see the root `Dockerfile`), otherwise from `config.toml` (see
@@ -18,8 +19,8 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use axum::{
-    extract::State,
-    http::StatusCode,
+    extract::{Query, State},
+    http::{header, StatusCode},
     response::{IntoResponse, Redirect, Response},
     routing::get,
     routing::post,
@@ -86,13 +87,15 @@ async fn main() -> Result<()> {
         .filter(|u| !u.is_empty())
         .or(cfg_site)
         .map(Arc::from);
-    let state = AppState { book: Arc::new(book), lichess_token, site_url };
+    let book = Arc::new(book);
+    pin_index(book.clone(), book_path);
+    let state = AppState { book, lichess_token, site_url };
 
     let app = Router::new()
         .route("/", get(root))
         .route("/health", get(|| async { "ok" }))
         .route("/api/meta", get(meta))
-        .route("/api/lookup", post(lookup))
+        .route("/api/lookup", get(lookup_get).post(lookup_post))
         .route("/api/identify", post(identify))
         .with_state(state)
         .layer(CorsLayer::permissive())
@@ -117,7 +120,68 @@ fn open_book(path: &Path) -> Result<Book<Mmap>> {
     let file = std::fs::File::open(path)?;
     // SAFETY: the book file is read-only and not mutated while mapped.
     let mmap = unsafe { Mmap::map(&file)? };
+    // Lookups jump to hash-random offsets in a file far bigger than RAM;
+    // default readahead drags in pages that will never be touched and
+    // multiplies the I/O behind every cold lookup.
+    let _ = mmap.advise(memmap2::Advice::Random);
     Ok(Book::open(mmap)?)
+}
+
+/// Keep the book's block index resident in RAM.
+///
+/// Every lookup binary-searches the index (~25 hash-random page touches); a
+/// cold page there means a synchronous disk read, and on a busy disk those
+/// can queue behind write bursts for seconds. Pinning the index caps a cold
+/// lookup at one data-section fault.
+///
+/// Try `mlock` first (eviction-proof). Containers often cap RLIMIT_MEMLOCK
+/// well below the index size, so on failure fall back to re-reading the
+/// file's index prefix periodically: the page cache is per-file and shared
+/// host-wide, so a plain sequential read warms the same pages the mmap
+/// faults against, and re-reading keeps them on the LRU active list. A pass
+/// over already-cached pages is just a memcpy, so the refresh is near-free.
+fn pin_index(book: SharedBook, path: PathBuf) {
+    const REWARM_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+    let len = {
+        let index = book.index_bytes();
+        // SAFETY: the range lies within the book's live, never-unmapped mapping.
+        if unsafe { libc::mlock(index.as_ptr().cast(), index.len()) } == 0 {
+            tracing::info!(mib = index.len() >> 20, "block index locked in RAM");
+            return;
+        }
+        index.len()
+    };
+    tracing::info!(
+        mib = len >> 20,
+        "mlock unavailable (raise RLIMIT_MEMLOCK to pin); warming index by periodic re-read"
+    );
+    std::thread::spawn(move || {
+        let _book = book; // hold the mapping for as long as we warm it
+        let mut buf = vec![0u8; 1 << 20];
+        loop {
+            let started = std::time::Instant::now();
+            let result = (|| -> std::io::Result<()> {
+                use std::io::Read;
+                let mut file = std::fs::File::open(&path)?;
+                let mut remaining = len;
+                while remaining > 0 {
+                    let chunk = remaining.min(buf.len());
+                    let n = file.read(&mut buf[..chunk])?;
+                    if n == 0 {
+                        break;
+                    }
+                    remaining -= n;
+                }
+                Ok(())
+            })();
+            match result {
+                Ok(()) => tracing::debug!(ms = started.elapsed().as_millis() as u64, "index warmed"),
+                Err(e) => tracing::warn!(error = %e, "index warm pass failed"),
+            }
+            std::thread::sleep(REWARM_INTERVAL);
+        }
+    });
 }
 
 async fn shutdown_signal() {
@@ -141,10 +205,13 @@ struct MetaResponse {
 }
 
 /// Static facts about the loaded book, for the frontend's header.
-async fn meta(State(state): State<AppState>) -> Json<MetaResponse> {
-    Json(MetaResponse {
-        positions: state.book.position_count(),
-    })
+async fn meta(State(state): State<AppState>) -> impl IntoResponse {
+    (
+        [(header::CACHE_CONTROL, "public, max-age=3600")],
+        Json(MetaResponse {
+            positions: state.book.position_count(),
+        }),
+    )
 }
 
 #[derive(Deserialize)]
@@ -170,20 +237,50 @@ struct LookupResponse {
     moves: Vec<KnownMove>,
 }
 
-async fn lookup(
+/// `GET /api/lookup?fen=...`. The GET form exists so browsers can send it as
+/// a CORS "simple request" (no preflight round-trip) and cache the response.
+async fn lookup_get(
+    State(state): State<AppState>,
+    Query(req): Query<LookupRequest>,
+) -> Result<Response, AppError> {
+    lookup(state, req.fen).await
+}
+
+async fn lookup_post(
     State(state): State<AppState>,
     Json(req): Json<LookupRequest>,
-) -> Result<Json<LookupResponse>, AppError> {
-    let fen: Fen = req
-        .fen
+) -> Result<Response, AppError> {
+    lookup(state, req.fen).await
+}
+
+/// A lookup answer is pure function of (book, fen) and the book only changes
+/// on redeploy, so let browsers and CDNs cache it for a day.
+const LOOKUP_CACHE_CONTROL: &str = "public, max-age=86400";
+
+async fn lookup(state: AppState, fen_str: String) -> Result<Response, AppError> {
+    let fen: Fen = fen_str
         .parse()
         .map_err(|_| AppError::bad_request("invalid FEN"))?;
     let pos: Chess = fen
         .into_position(CastlingMode::Standard)
         .map_err(|_| AppError::bad_request("illegal position"))?;
 
-    let hash = position_hash(&pos);
-    let stats = state.book.lookup(hash);
+    // A cold lookup page-faults into a book far bigger than RAM, which can
+    // stall on disk for seconds under I/O pressure. Take it off the async
+    // workers so one slow fault doesn't block unrelated in-flight requests,
+    // and log it so slow responses are attributable in the server logs.
+    let book = state.book.clone();
+    let started = std::time::Instant::now();
+    let (pos, stats) = tokio::task::spawn_blocking(move || {
+        let stats = book.lookup(position_hash(&pos));
+        (pos, stats)
+    })
+    .await
+    .map_err(|_| AppError::internal("lookup task failed"))?;
+    let elapsed = started.elapsed();
+    if elapsed.as_millis() > 500 {
+        tracing::warn!(ms = elapsed.as_millis() as u64, fen = %fen_str, "slow book lookup");
+    }
 
     // The book stores each move as an index into the canonical legal-move
     // ordering; resolve against the live position to emit both UCI (for the
@@ -204,11 +301,15 @@ async fn lookup(
         }
     }
 
-    Ok(Json(LookupResponse {
-        fen: req.fen,
-        total,
-        moves,
-    }))
+    Ok((
+        [(header::CACHE_CONTROL, LOOKUP_CACHE_CONTROL)],
+        Json(LookupResponse {
+            fen: fen_str,
+            total,
+            moves,
+        }),
+    )
+        .into_response())
 }
 
 /// Deepest position depth (in plies) the lichess opening explorer indexes;
@@ -317,7 +418,7 @@ fn line_winner(mut pos: Chess, tail: &[String]) -> Option<Option<String>> {
     }
 }
 
-fn explorer_lookup(token: &str, fen: &str) -> Result<serde_json::Value, ureq::Error> {
+fn explorer_lookup(token: &str, fen: &str) -> Result<serde_json::Value, Box<ureq::Error>> {
     let body = ureq::get("https://explorer.lichess.ovh/lichess")
         .query("variant", "standard")
         .query("fen", fen)
@@ -327,8 +428,10 @@ fn explorer_lookup(token: &str, fen: &str) -> Result<serde_json::Value, ureq::Er
         .query("recentGames", "15")
         .set("Authorization", &format!("Bearer {token}"))
         .timeout(std::time::Duration::from_secs(8))
-        .call()?
-        .into_json()?;
+        .call()
+        .map_err(Box::new)?
+        .into_json()
+        .map_err(|e| Box::new(e.into()))?;
     Ok(body)
 }
 
@@ -390,6 +493,13 @@ impl AppError {
     fn bad_request(msg: &str) -> Self {
         Self {
             status: StatusCode::BAD_REQUEST,
+            message: msg.to_string(),
+        }
+    }
+
+    fn internal(msg: &str) -> Self {
+        Self {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
             message: msg.to_string(),
         }
     }

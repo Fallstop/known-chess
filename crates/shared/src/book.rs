@@ -243,6 +243,9 @@ fn gamma_decode(r: &mut BitReader) -> u64 {
 /// Per-position move tallies. Nearly every position has exactly one recorded
 /// move, so that case stays inline; the rare multi-move positions spill to a
 /// boxed vec, keeping the builder's per-entry footprint at 16 bytes.
+// The Box keeps the rare Many variant from inflating every Slot to Vec's 24
+// bytes; clippy's box-collection lint doesn't see the enum-size goal.
+#[allow(clippy::box_collection)]
 enum Slot {
     One(u8, u64),
     Many(Box<Vec<(u8, u64)>>),
@@ -355,7 +358,7 @@ impl BookWriter {
     /// Append one entry. `hash` must be strictly greater than the previous
     /// entry's, and `moves` already sorted most-played-first.
     fn push(&mut self, hash: u64, moves: &[(u8, u64)]) {
-        if self.count % BLOCK_ENTRIES == 0 {
+        if self.count.is_multiple_of(BLOCK_ENTRIES) {
             self.data.align();
             self.index.push((hash, self.data.byte_len() as u64));
         } else {
@@ -520,7 +523,7 @@ pub fn write_merged_many_progress<B: AsRef<[u8]>, W: Write>(
         combine_moves(&mut moves);
         writer.push(min, &moves);
         written += 1;
-        if written % PROGRESS_INTERVAL == 0 {
+        if written.is_multiple_of(PROGRESS_INTERVAL) {
             progress(written);
         }
     }
@@ -576,6 +579,13 @@ impl<B: AsRef<[u8]>> Book<B> {
 
     pub fn position_count(&self) -> u64 {
         self.count
+    }
+
+    /// The header and block index: the prefix of the file that every lookup's
+    /// binary search touches. Small relative to the data section (~16 bytes
+    /// per 256 entries), so servers can afford to pin or pre-warm it.
+    pub fn index_bytes(&self) -> &[u8] {
+        &self.bytes.as_ref()[..HEADER_LEN + self.n_blocks * INDEX_REC_LEN]
     }
 
     fn block_index(&self, block: usize) -> (u64, u64) {
