@@ -1,11 +1,11 @@
 <script lang="ts">
 	import type { SourcePlayer } from '$lib/api';
 	import { fmtMonth } from '$lib/format';
-	import type { KnownGame } from '$lib/game.svelte';
+	import type { GameView } from '$lib/game.svelte';
 	import posthog from 'posthog-js';
 
 	/** Overlay covering the board when the game is over, off the record, or errored. */
-	let { game }: { game: KnownGame } = $props();
+	let { game }: { game: GameView } = $props();
 
 	const fmtName = (p: SourcePlayer) => p.name || 'Anonymous';
 </script>

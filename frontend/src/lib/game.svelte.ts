@@ -20,6 +20,42 @@ export interface HistEntry {
 	preFen: string;
 	from: string;
 	to: string;
+	/** Piece type captured by this move, if any (Unprecedented material tally). */
+	captured?: string;
+}
+
+/**
+ * The reactive surface the board and ledger components read. Both game modes
+ * (KnownGame and UnprecedentedGame) implement it, so the same components drive
+ * either game. Fields that only make sense with the book behind them
+ * (lastChoices, total, sourceGame…) stay present but inert in Unprecedented.
+ */
+export interface GameView {
+	fen: string;
+	known: KnownMove[];
+	lastChoices: KnownMove[];
+	total: number;
+	phase: Phase;
+	errorMsg: string;
+	history: HistEntry[];
+	sound: boolean;
+	previewUci: string | null;
+	sourceGame: SourceGame | null;
+	sourceState: 'idle' | 'searching' | 'found' | 'none';
+	readonly turn: 'w' | 'b';
+	readonly interactive: boolean;
+	readonly lastEntry: HistEntry | null;
+	readonly lastMove: { from: string; to: string } | null;
+	readonly checkSquare: string | null;
+	readonly material: { caps: Record<'w' | 'b', string[]>; diff: number };
+	readonly toMoveName: string;
+	readonly result: { title: string; detail: string } | null;
+	newGame(): void;
+	takeback(): void;
+	retry(): void;
+	choose(mv: KnownMove): void;
+	chooseUci(uci: string): void;
+	warm(uci: string): void;
 }
 
 // ——— captured material ———————————————————————————————————————————————
@@ -35,7 +71,7 @@ const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
  * knows about it, and the phase machine that walks games forward
  * (lookup -> choose -> forced lines -> the end).
  */
-export class KnownGame {
+export class KnownGame implements GameView {
 	fen = $state(START);
 	known = $state<KnownMove[]>([]);
 	/**

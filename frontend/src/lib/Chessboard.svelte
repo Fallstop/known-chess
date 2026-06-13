@@ -1,7 +1,7 @@
 <script lang="ts">
-	import { Chess } from 'chess.js';
 	import { untrack } from 'svelte';
 	import type { KnownMove } from '$lib/api';
+	import { boardPieces } from '$lib/freechess';
 	import { fmtCompact } from '$lib/format';
 
 	interface Props {
@@ -25,6 +25,8 @@
 		 * off and back on around every move.
 		 */
 		dimInactive?: boolean;
+		/** Show the per-square game-count badges (off when counts are meaningless). */
+		showCounts?: boolean;
 		/** Called with the chosen move in UCI when the player completes a move. */
 		onMove: (uci: string) => void;
 		/**
@@ -43,6 +45,7 @@
 		checkSquare = null,
 		previewUci = null,
 		dimInactive = false,
+		showCounts = true,
 		onMove,
 		onPeek
 	}: Props = $props();
@@ -85,14 +88,10 @@
 	let ghosts = $state<Piece[]>([]);
 	let nextId = 1;
 
+	// Read placement straight from the FEN: tolerant of the illegal positions
+	// Unprecedented mode reaches, which a strict parser (chess.js) would reject.
 	function boardMap(f: string): Map<string, { color: 'w' | 'b'; type: string }> {
-		const m = new Map<string, { color: 'w' | 'b'; type: string }>();
-		for (const row of new Chess(f).board()) {
-			for (const p of row) {
-				if (p) m.set(p.square, { color: p.color, type: p.type });
-			}
-		}
-		return m;
+		return boardPieces(f);
 	}
 
 	function dist(a: string, b: string): number {
@@ -352,9 +351,11 @@
 		let label = p ? `${sq}, ${p.color === 'w' ? 'white' : 'black'} ${PIECE_NAMES[p.type]}` : sq;
 		if (!interactive) return label;
 		if (targets.has(sq)) {
-			label += `. Move here, played in ${sumCount(targets.get(sq)!).toLocaleString()} games`;
+			label += showCounts
+				? `. Move here, played in ${sumCount(targets.get(sq)!).toLocaleString()} games`
+				: '. Move here';
 		} else if (byFrom.has(sq)) {
-			label += selected === sq ? '. Selected' : '. Has moves with precedent';
+			label += selected === sq ? '. Selected' : showCounts ? '. Has moves with precedent' : '. Has moves';
 		}
 		return label;
 	}
@@ -406,7 +407,7 @@
 	{#each [...targets] as [sq, opts] (sq)}
 		<div class="mark" class:ring={occupied.has(sq)} style="--x:{xOf(fileOf(sq))};--y:{yOf(rankOf(sq))}">
 			{#if !occupied.has(sq)}<span class="dot"></span>{/if}
-			<span class="badge">{fmtCompact(sumCount(opts))}</span>
+			{#if showCounts}<span class="badge">{fmtCompact(sumCount(opts))}</span>{/if}
 		</div>
 	{/each}
 

@@ -1,12 +1,12 @@
 <script lang="ts">
-	import type { KnownGame } from '$lib/game.svelte';
+	import type { GameView } from '$lib/game.svelte';
 	import { fmtCompact } from '$lib/format';
 
 	/**
 	 * The clickable list of known continuations. Stays mounted (greyed) through
 	 * the brief lookup after a move so the layout doesn't jump every ply.
 	 */
-	let { game }: { game: KnownGame } = $props();
+	let { game }: { game: GameView } = $props();
 
 	const visible = $derived(
 		(game.phase === 'choose' || game.phase === 'loading') && game.lastChoices.length > 0

@@ -1,19 +1,26 @@
 <script lang="ts">
-	import type { KnownGame } from '$lib/game.svelte';
+	import type { GameView } from '$lib/game.svelte';
+	import { MODE } from '$lib/mode';
 
 	/** One-line phase readout: whose move, forced lines, lookups, the end. */
-	let { game }: { game: KnownGame } = $props();
+	let { game }: { game: GameView } = $props();
 </script>
 
 <div class="state" class:forced={game.phase === 'forced'} role="status" aria-live="polite">
 	{#if game.phase === 'loading'}
-		<span class="state-main dim">Searching for precedent<span class="ellip"></span></span>
+		<span class="state-main dim">Searching the record<span class="ellip"></span></span>
 	{:else if game.phase === 'forced'}
 		<span class="state-main">Locked in</span>
 		<span class="state-sub">Only one game continued from here. Precedent plays it out.</span>
 	{:else if game.phase === 'choose'}
 		<span class="state-main">{game.toMoveName} to move</span>
-		<span class="state-sub">Pick one of {game.known.length} moves with precedent.</span>
+		<span class="state-sub">
+			{#if MODE === 'unprecedented'}
+				Pick one of {game.known.length} moves never played from here.
+			{:else}
+				Pick one of {game.known.length} moves with precedent.
+			{/if}
+		</span>
 	{:else if game.phase === 'over' && game.result}
 		<span class="state-main">{game.result.title.replace(/\.$/, '')}</span>
 		<span class="state-sub">{game.result.detail}</span>

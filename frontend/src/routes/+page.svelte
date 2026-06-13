@@ -7,10 +7,12 @@
 	import StatePanel from '$lib/StatePanel.svelte';
 	import Continuations from '$lib/Continuations.svelte';
 	import MoveHistory from '$lib/MoveHistory.svelte';
-	import { KnownGame } from '$lib/game.svelte';
+	import { KnownGame, type GameView } from '$lib/game.svelte';
+	import { UnprecedentedGame } from '$lib/unprecedented.svelte';
+	import { MODE, copy } from '$lib/mode';
 	import { meta } from '$lib/api';
 
-	const game = new KnownGame();
+	const game: GameView = MODE === 'unprecedented' ? new UnprecedentedGame() : new KnownGame();
 
 	let flipped = $state(false);
 	let archivePositions = $state<number | null>(null);
@@ -27,38 +29,37 @@
 </script>
 
 <svelte:head>
-	<title>Precedent Chess: every move once lived</title>
-	<meta name="description" content="Chess where every move needs a precedent: it counts only if it was played from your exact position in a real game. Play until a single game remains, and watch its real ending." />
-	<link rel="canonical" href="https://precedent.jmw.nz/" />
+	<title>{copy.title}</title>
+	<meta name="description" content={copy.description} />
+	<link rel="canonical" href={copy.canonical} />
 
 	<meta property="og:type" content="website" />
-	<meta property="og:site_name" content="Precedent Chess" />
-	<meta property="og:title" content="Precedent Chess: every move once lived" />
-	<meta property="og:description" content="Chess where every move needs a precedent: it counts only if it was played from your exact position in a real game. Play until a single game remains, and watch its real ending." />
-	<meta property="og:url" content="https://precedent.jmw.nz/" />
-	<meta property="og:image" content="https://precedent.jmw.nz/og.png" />
+	<meta property="og:site_name" content="{copy.brandA}{copy.brandB}" />
+	<meta property="og:title" content={copy.title} />
+	<meta property="og:description" content={copy.description} />
+	<meta property="og:url" content={copy.canonical} />
+	<meta property="og:image" content={copy.ogImage} />
 	<meta property="og:image:width" content="1200" />
 	<meta property="og:image:height" content="630" />
-	<meta property="og:image:alt" content="Precedent Chess: a chessboard where each square shows how many real games played that move" />
+	<meta property="og:image:alt" content={copy.title} />
 
 	<meta name="twitter:card" content="summary_large_image" />
-	<meta name="twitter:title" content="Precedent Chess: every move once lived" />
-	<meta name="twitter:description" content="Chess where every move needs a precedent: it counts only if it was played from your exact position in a real game." />
-	<meta name="twitter:image" content="https://precedent.jmw.nz/og.png" />
+	<meta name="twitter:title" content={copy.title} />
+	<meta name="twitter:description" content={copy.description} />
+	<meta name="twitter:image" content={copy.ogImage} />
 
 	{@html `<script type="application/ld+json">${JSON.stringify({
 		'@context': 'https://schema.org',
 		'@type': 'WebApplication',
-		name: 'Precedent Chess',
-		url: 'https://precedent.jmw.nz/',
-		description:
-			'Chess where every move needs a precedent: it counts only if it was played from your exact position in a real Lichess game. Play until a single game remains, and watch its real ending.',
+		name: `${copy.brandA}${copy.brandB}`,
+		url: copy.canonical,
+		description: copy.description,
 		applicationCategory: 'GameApplication',
 		genre: 'Chess',
 		operatingSystem: 'Web',
 		browserRequirements: 'Requires JavaScript',
 		offers: { '@type': 'Offer', price: '0', priceCurrency: 'USD' },
-		image: 'https://precedent.jmw.nz/og.png',
+		image: copy.ogImage,
 		author: { '@type': 'Person', name: 'Jasper M-W', url: 'https://jmw.nz' },
 		isBasedOn: 'https://database.lichess.org/'
 	})}</scr${''}ipt>`}
@@ -66,33 +67,21 @@
 
 <div class="page">
 	<header>
-		<h1>Precedent<span class="amp">/</span>Chess</h1>
-		<p class="lede">
-			Chess where a move is legal only if it has precedent: someone, somewhere, played it from
-			this exact position in a real Lichess game. The deeper you go, the fewer games ever got
-			there, until a single game remains and plays out its real ending.
-		</p>
+		<h1>{copy.brandA}<span class="amp">/</span>{copy.brandB}</h1>
+		<p class="lede">{copy.lede}</p>
 		{#if archivePositions !== null}
 			<p class="archive-size">{archivePositions.toLocaleString()} positions on record</p>
 		{/if}
 	</header>
 
 	<section class="how" aria-label="How it works">
-		<div class="how-step">
-			<span class="how-num" aria-hidden="true">01</span>
-			<h2>Pick a move</h2>
-			<p>Only moves actually played from this position are open to you. The small count on each square is how many games chose it.</p>
-		</div>
-		<div class="how-step">
-			<span class="how-num" aria-hidden="true">02</span>
-			<h2>Positions get rarer</h2>
-			<p>Each position is looked up in the record on its own, whatever the move order. The deeper you go, the fewer real games ever reached it.</p>
-		</div>
-		<div class="how-step">
-			<span class="how-num" aria-hidden="true">03</span>
-			<h2>One game remains</h2>
-			<p>Once a single game ever reached your position, precedent takes over and plays out its real ending, which you can open on Lichess.</p>
-		</div>
+		{#each copy.steps as step, i (i)}
+			<div class="how-step">
+				<span class="how-num" aria-hidden="true">0{i + 1}</span>
+				<h2>{step.title}</h2>
+				<p>{step.body}</p>
+			</div>
+		{/each}
 	</section>
 
 	<main>
@@ -108,6 +97,7 @@
 					checkSquare={game.checkSquare}
 					previewUci={game.previewUci}
 					dimInactive={game.phase === 'loading' || game.phase === 'forced'}
+					showCounts={copy.showCounts}
 					onMove={(uci) => game.chooseUci(uci)}
 					onPeek={(uci) => game.warm(uci)}
 				/>
@@ -117,9 +107,13 @@
 		</section>
 
 		<aside class="ledger" aria-label="Game ledger">
-			<RemainCounter total={game.total} />
+			{#if copy.showRemainCounter}
+				<RemainCounter total={game.total} />
+			{/if}
 			<StatePanel {game} />
-			<Continuations {game} />
+			{#if copy.showContinuations}
+				<Continuations {game} />
+			{/if}
 			<MoveHistory history={game.history} fen={game.fen} />
 
 			<div class="controls" role="group" aria-label="Game controls">
@@ -143,10 +137,7 @@
 	</main>
 
 	<footer>
-		<p class="foot-note">
-			Every count is real games that reached your exact position. Moves played for you by
-			precedent appear <span class="auto-demo">dimmed</span>.
-		</p>
+		<p class="foot-note">{copy.footNote}</p>
 		<nav class="colophon" aria-label="Credits">
 			<span class="colophon-item">
 				<a href="https://database.lichess.org/" target="_blank" rel="noopener">Lichess open database</a>
@@ -365,10 +356,6 @@
 		font-size: 0.82rem;
 		line-height: 1.5;
 		max-width: 52ch;
-	}
-	.auto-demo {
-		font-style: italic;
-		color: var(--ink-dim);
 	}
 	.colophon {
 		display: flex;

@@ -97,6 +97,22 @@ export function lookup(fen: string, signal?: AbortSignal): Promise<LookupRespons
 	return fetchJSON<LookupResponse>(`/api/lookup?fen=${encodeURIComponent(fen)}`, {}, signal);
 }
 
+/**
+ * The set of move UCIs the book has already seen from this position, for
+ * Unprecedented mode. A 4xx means the server rejected the FEN as an illegal
+ * position — which is exactly a position no real game ever reached, so it has
+ * no precedents: an empty set, not an error.
+ */
+export async function forbidden(fen: string, signal?: AbortSignal): Promise<Set<string>> {
+	try {
+		const resp = await lookup(fen, signal);
+		return new Set(resp.moves.map((m) => m.uci));
+	} catch (e) {
+		if (e instanceof HttpError && e.status >= 400 && e.status < 500) return new Set();
+		throw e;
+	}
+}
+
 export interface SourcePlayer {
 	name: string;
 	rating: number | null;

@@ -1,7 +1,7 @@
 <script lang="ts">
-	import type { KnownGame } from '$lib/game.svelte';
+	import type { GameView } from '$lib/game.svelte';
 
-	let { game, color }: { game: KnownGame; color: 'w' | 'b' } = $props();
+	let { game, color }: { game: GameView; color: 'w' | 'b' } = $props();
 
 	const active = $derived(game.turn === color && game.phase !== 'over' && game.phase !== 'dry');
 	const diff = $derived(color === 'w' ? game.material.diff : -game.material.diff);

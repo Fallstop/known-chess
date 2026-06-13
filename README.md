@@ -185,8 +185,27 @@ they are baked in at build time, so changing one needs a redeploy):
 | var | meaning |
 |-----|---------|
 | `PUBLIC_KC_API_URL` | backend origin, e.g. `https://api.example.com` (no trailing slash) |
+| `PUBLIC_KC_MODE` | `precedent` (default) or `unprecedented` — which game this build serves |
 | `PUBLIC_POSTHOG_PROJECT_TOKEN` | PostHog project token (empty disables analytics) |
 | `PUBLIC_POSTHOG_HOST` | PostHog UI host, e.g. `https://us.i.posthog.com` |
+
+### Two games, one backend: Unprecedented mode
+
+The same frontend codebase ships a sibling game, **Unprecedented Chess**, behind
+the build-time `PUBLIC_KC_MODE` flag. Where Precedent only lets you play moves a
+real game played, Unprecedented only lets you play moves **no game ever played**
+from your position. Pieces move and block normally, but **you may capture your own
+pieces** (so the opening is forced to begin with a self-capture — all 20 legal
+first moves are already on the record); you still can't take a king, and you win by
+checkmate. It runs a small self-contained engine in the browser
+(`frontend/src/lib/freechess.ts`, since `chess.js` can't represent the illegal
+positions this reaches) and reuses the same backend `/api/lookup` to learn which
+moves are already on the record.
+
+Deploy it as a **second Cloudflare Pages project** from the same repo, identical
+settings, with `PUBLIC_KC_MODE=unprecedented` and `PUBLIC_KC_API_URL` pointing at
+the **same** shared backend. Run locally with `PUBLIC_KC_MODE=unprecedented pnpm dev`.
+Open Graph cards for both live in `frontend/og/` (`pnpm og` renders both).
 
 ## API
 
