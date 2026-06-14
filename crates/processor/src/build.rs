@@ -26,7 +26,7 @@ use memmap2::Mmap;
 use pgn_reader::{BufferedReader, RawHeader, SanPlus, Skip, Visitor};
 use shakmaty::{Chess, Position};
 use shared::{
-    canonical_index, position_hash, write_merged, write_merged_many_progress, Book, BookBuilder,
+    canonical_index, position_hash, write_merged, write_merged_streaming, Book, BookBuilder,
     Config,
 };
 
@@ -113,9 +113,6 @@ pub fn run(cfg: &Config, targets: &[String], opts: &BuildOpts) -> Result<()> {
         name.push(".tmp");
         PathBuf::from(name)
     };
-    let mut file = io::BufWriter::new(
-        File::create(&tmp).with_context(|| format!("creating {}", tmp.display()))?,
-    );
 
     // Spilled tallies are byte-identical to a book, so the merge folds them in
     // alongside the existing book as extra mmap'd sources.
@@ -128,15 +125,10 @@ pub fn run(cfg: &Config, targets: &[String], opts: &BuildOpts) -> Result<()> {
     olds.extend(&spill_books);
 
     // Every run was spilled to disk during processing, so the merge reads them
-    // all as mmap'd `olds`; nothing is held in RAM as an in-memory run.
-    let estimate = olds.iter().map(|b| b.position_count()).sum::<u64>();
-    let pb = position_bar(estimate);
-    let stats = write_merged_many_progress(&olds, &[], &mut file, |written| {
-        pb.set_position(written);
-    })
-    .with_context(|| format!("writing {}", tmp.display()))?;
-    pb.finish_and_clear();
-    drop(file);
+    // all as mmap'd `olds`; nothing is held in RAM as an in-memory run, and the
+    // streaming writer keeps the merged book's data section on disk rather than
+    // buffering the whole (multi-GB) body in RAM.
+    let stats = merge_into_book(&olds, &tmp)?;
     drop(olds);
     drop(existing); // unmap before replacing the file underneath
     drop(spill_books); // unmap before deleting the spill files
@@ -162,6 +154,151 @@ fn open_book(path: &Path) -> Result<Book<Mmap>> {
     // SAFETY: read-only and not mutated while mapped.
     let mmap = unsafe { Mmap::map(&file)? };
     Ok(Book::open(mmap)?)
+}
+
+/// Stream-merge `olds` into a complete book at `tmp`, driving a progress bar.
+/// The data section is written straight to disk, so peak RAM is the block index
+/// (a few hundred MB even for billions of positions), not the whole book.
+fn merge_into_book(olds: &[&Book<Mmap>], tmp: &Path) -> Result<shared::WriteStats> {
+    let estimate = olds.iter().map(|b| b.position_count()).sum::<u64>();
+    let pb = position_bar(estimate);
+    let stats = write_merged_streaming(olds, &[], tmp, |written| pb.set_position(written))
+        .with_context(|| format!("writing {}", tmp.display()))?;
+    pb.finish_and_clear();
+    Ok(stats)
+}
+
+/// Finish a `build` that died during the final merge by folding the still-on-disk
+/// `<output>.spill*` files (plus the existing book, unless `--fresh`) into the
+/// combined book — no dumps are re-parsed. The spills are complete books holding
+/// every position that was replayed before the crash; only the merge that
+/// consumes them failed, so this picks up exactly there. On success the spills
+/// are removed and the `.sources` manifest is brought up to date with the dumps
+/// the crashed run was processing (the still-downloaded-but-unrecorded set), so
+/// `list` shows them processed and a later catch-up won't fold them in twice.
+pub fn resume_merge(
+    cfg: &Config,
+    output: Option<PathBuf>,
+    fresh: bool,
+    record: &[String],
+) -> Result<()> {
+    let output = output.unwrap_or_else(|| cfg.book_path());
+    let manifest_path = manifest_for(cfg, &output);
+
+    let spill_paths = discover_spills(&output)?;
+    if spill_paths.is_empty() {
+        bail!("no spill files found at {}.spill*; nothing to resume", output.display());
+    }
+    tracing::info!(count = spill_paths.len(), "resuming final merge from spill files");
+
+    // Same source set the interrupted final merge would have folded: the
+    // existing book (unless --fresh) plus every spill, all read as mmap'd books.
+    let mut sources: Vec<String> = if fresh { Vec::new() } else { read_sources(&manifest_path) };
+    let existing: Option<Book<Mmap>> = if !fresh && output.is_file() {
+        Some(open_book(&output).with_context(|| format!("opening existing book {}", output.display()))?)
+    } else {
+        None
+    };
+    let spill_books: Vec<Book<Mmap>> = spill_paths
+        .iter()
+        .map(|p| open_book(p).with_context(|| format!("opening spill {}", p.display())))
+        .collect::<Result<_>>()?;
+    let mut olds: Vec<&Book<Mmap>> = Vec::with_capacity(spill_books.len() + 1);
+    olds.extend(existing.as_ref());
+    olds.extend(&spill_books);
+
+    if let Some(parent) = output.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    let tmp = {
+        let mut name = output.as_os_str().to_os_string();
+        name.push(".tmp");
+        PathBuf::from(name)
+    };
+    let stats = merge_into_book(&olds, &tmp)?;
+    drop(olds);
+    drop(existing); // unmap before replacing the file underneath
+    drop(spill_books); // unmap before deleting the spill files
+    std::fs::rename(&tmp, &output)
+        .with_context(|| format!("renaming {} into place", tmp.display()))?;
+    for path in &spill_paths {
+        std::fs::remove_file(path).ok();
+    }
+
+    // The crashed run never recorded its sources (that's the last build step),
+    // so the manifest still describes the pre-crash book. Bring it up to date
+    // with the dumps that run was processing. Two ways to learn them: any dumps
+    // still on disk that aren't recorded (the dumps weren't deleted), plus any
+    // month tags / filenames passed explicitly (for when they were). A bare
+    // `YYYY-MM` tag maps to the canonical lichess dump filename.
+    let mut to_record: Vec<String> =
+        catch_up_inputs(cfg, &manifest_path, fresh)?.into_iter().map(|(_, name)| name).collect();
+    for target in record {
+        to_record.push(manifest_name_for(target));
+    }
+    let mut recorded = 0usize;
+    for name in to_record {
+        if !sources.contains(&name) {
+            tracing::info!(dump = %name, "recording dump folded in by the resumed merge");
+            sources.push(name);
+            recorded += 1;
+        }
+    }
+    if recorded == 0 {
+        tracing::warn!(
+            "no dumps recorded in the manifest; pass the month tags this build processed \
+             (e.g. `merge-spills 2018-01 2018-02`) if `list` should show them processed"
+        );
+    }
+    write_sources(&manifest_path, &sources)?;
+    tracing::info!(
+        positions = stats.positions,
+        bytes = stats.bytes,
+        path = %output.display(),
+        sources = sources.len(),
+        "resumed merge wrote combined book"
+    );
+    Ok(())
+}
+
+/// Canonical `.sources` manifest entry for a `merge-spills` record target. A
+/// value that already looks like a dump filename is kept verbatim; a bare
+/// `YYYY-MM` tag becomes the standard lichess dump filename `build` would have
+/// recorded for that month.
+fn manifest_name_for(target: &str) -> String {
+    if target.ends_with(".pgn.zst") || target.ends_with(".pgn") {
+        target.to_string()
+    } else {
+        format!("lichess_db_standard_rated_{target}.pgn.zst")
+    }
+}
+
+/// All `<output>.spill<N>` files in the output's directory, ordered by `N` (the
+/// order they were written, which is also the order the build would merge them).
+fn discover_spills(output: &Path) -> Result<Vec<PathBuf>> {
+    let dir = output.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    let stem = output.file_name().and_then(|f| f.to_str()).unwrap_or_default();
+    let prefix = format!("{stem}.spill");
+    let mut spills: Vec<(u64, PathBuf)> = Vec::new();
+    let read = match std::fs::read_dir(dir) {
+        Ok(r) => r,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e).with_context(|| format!("reading {}", dir.display())),
+    };
+    for entry in read {
+        let path = entry?.path();
+        let name = match path.file_name().and_then(|f| f.to_str()) {
+            Some(n) => n.to_string(),
+            None => continue,
+        };
+        if let Some(num) = name.strip_prefix(&prefix) {
+            if let Ok(n) = num.parse::<u64>() {
+                spills.push((n, path));
+            }
+        }
+    }
+    spills.sort_by_key(|(n, _)| *n);
+    Ok(spills.into_iter().map(|(_, p)| p).collect())
 }
 
 /// The `.sources` manifest path for a given output book.

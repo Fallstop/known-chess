@@ -51,7 +51,9 @@
 
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
-use std::io::{self, Write};
+use std::fs::File;
+use std::io::{self, BufWriter, Write};
+use std::path::Path;
 
 pub const MAGIC: &[u8; 8] = b"KNCHESS2";
 pub const FORMAT_VERSION: u32 = 2;
@@ -396,6 +398,77 @@ impl BookWriter {
     }
 }
 
+/// Like [`BookWriter`], but streams each completed block's bytes to a sink
+/// (typically a temp file) instead of accumulating the whole data section in
+/// RAM. Only the block index and one block's worth of bits stay resident, so
+/// peak memory is independent of the book's size. See [`write_merged_streaming`].
+struct StreamWriter<W: Write> {
+    /// (block first hash, byte offset of the block within the data section).
+    index: Vec<(u64, u64)>,
+    /// Rolling bit buffer holding at most the current (unfinished) block.
+    buf: BitWriter,
+    /// Where finished blocks are flushed.
+    sink: W,
+    /// Total bytes flushed to `sink` so far — the next block's data offset.
+    data_len: u64,
+    rice_k: u8,
+    count: u64,
+    prev_hash: u64,
+}
+
+impl<W: Write> StreamWriter<W> {
+    fn new(sink: W, rice_k: u8) -> Self {
+        Self {
+            index: Vec::new(),
+            buf: BitWriter::default(),
+            sink,
+            data_len: 0,
+            rice_k,
+            count: 0,
+            prev_hash: 0,
+        }
+    }
+
+    /// Append one entry; identical encoding to [`BookWriter::push`], but each
+    /// block boundary flushes the previous block to the sink first so `buf`
+    /// never holds more than one block.
+    fn push(&mut self, hash: u64, moves: &[(u8, u64)]) -> io::Result<()> {
+        if self.count % BLOCK_ENTRIES == 0 {
+            self.flush_block()?;
+            self.index.push((hash, self.data_len));
+        } else {
+            debug_assert!(hash > self.prev_hash);
+            rice_encode(&mut self.buf, hash - self.prev_hash - 1, u32::from(self.rice_k));
+        }
+        gamma_encode(&mut self.buf, moves.len() as u64);
+        for &(index, count) in moves {
+            self.buf.push(u64::from(index), 8);
+            gamma_encode(&mut self.buf, count);
+        }
+        self.prev_hash = hash;
+        self.count += 1;
+        Ok(())
+    }
+
+    /// Byte-align and drain `buf` to the sink, advancing `data_len`. After
+    /// [`BitWriter::align`] the buffer holds only whole bytes and its bit
+    /// accumulator is empty, so taking its bytes leaves it ready to reuse.
+    fn flush_block(&mut self) -> io::Result<()> {
+        self.buf.align();
+        let bytes = std::mem::take(&mut self.buf.bytes);
+        self.sink.write_all(&bytes)?;
+        self.data_len += bytes.len() as u64;
+        Ok(())
+    }
+
+    /// Flush the final block and return `(count, index, data byte length)`.
+    fn finalize(mut self) -> io::Result<(u64, Vec<(u64, u64)>, u64)> {
+        self.flush_block()?;
+        self.sink.flush()?;
+        Ok((self.count, self.index, self.data_len))
+    }
+}
+
 /// Sum duplicate move indexes, then order most-played-first (ties by index).
 fn combine_moves(moves: &mut Vec<(u8, u64)>) {
     moves.sort_unstable_by_key(|m| m.0);
@@ -482,12 +555,94 @@ pub fn write_merged_many_progress<B: AsRef<[u8]>, W: Write>(
     olds: &[&Book<B>],
     runs: &[SortedEntries],
     mut out: W,
-    mut progress: impl FnMut(u64),
+    progress: impl FnMut(u64),
 ) -> io::Result<WriteStats> {
-    let estimate = olds.iter().map(|b| b.position_count()).sum::<u64>()
-        + runs.iter().map(|r| r.0.len() as u64).sum::<u64>();
-    let mut writer = BookWriter::new(rice_k_for(estimate));
+    let mut writer = BookWriter::new(rice_k_for(merge_estimate(olds, runs)));
+    merge_into(
+        olds,
+        runs,
+        |hash, moves| {
+            writer.push(hash, moves);
+            Ok(())
+        },
+        progress,
+    )?;
+    writer.finish(&mut out)
+}
 
+/// Like [`write_merged_many_progress`], but writes the body straight to disk
+/// instead of buffering the whole book in RAM, so peak memory is the *index*
+/// (one 16-byte record per [`BLOCK_ENTRIES`] positions — a few hundred MB even
+/// for a multi-billion-position book) rather than the multi-gigabyte data
+/// section. The book format puts the index ahead of the data, but the index
+/// size isn't known until the merge finishes, so the data bitstream is streamed
+/// to a sibling `<out_path>.data` temp file while the index accumulates in RAM;
+/// once the merge is done the header and index are written to `out_path` and the
+/// data file is appended and removed. Use this for the big combined-book merge;
+/// the in-RAM [`write_merged_many_progress`] is fine for the small spill writes.
+pub fn write_merged_streaming<B: AsRef<[u8]>>(
+    olds: &[&Book<B>],
+    runs: &[SortedEntries],
+    out_path: &Path,
+    progress: impl FnMut(u64),
+) -> io::Result<WriteStats> {
+    let rice_k = rice_k_for(merge_estimate(olds, runs));
+
+    // Stream the data bitstream to a sibling temp file; keep only the index
+    // (block first-hash + offset) resident.
+    let data_path = sibling(out_path, ".data");
+    let mut writer = StreamWriter::new(
+        BufWriter::new(File::create(&data_path)?),
+        rice_k,
+    );
+    merge_into(olds, runs, |hash, moves| writer.push(hash, moves), progress)?;
+    let (count, index, data_len) = writer.finalize()?;
+
+    // Assemble the final book: header + index, then the streamed data body.
+    let mut out = BufWriter::new(File::create(out_path)?);
+    out.write_all(MAGIC)?;
+    out.write_all(&FORMAT_VERSION.to_le_bytes())?;
+    out.write_all(&count.to_le_bytes())?;
+    out.write_all(&[rice_k, 0, 0, 0])?;
+    for (first_hash, off) in &index {
+        out.write_all(&first_hash.to_le_bytes())?;
+        out.write_all(&off.to_le_bytes())?;
+    }
+    let mut data = File::open(&data_path)?;
+    io::copy(&mut data, &mut out)?;
+    out.flush()?;
+    drop(data);
+    std::fs::remove_file(&data_path).ok();
+
+    let head_len = (HEADER_LEN + index.len() * INDEX_REC_LEN) as u64;
+    Ok(WriteStats { positions: count, bytes: head_len + data_len })
+}
+
+/// `path` with `suffix` appended to its file name (e.g. `book.tmp` → `book.tmp.data`).
+fn sibling(path: &Path, suffix: &str) -> std::path::PathBuf {
+    let mut name = path.as_os_str().to_os_string();
+    name.push(suffix);
+    std::path::PathBuf::from(name)
+}
+
+/// Upper bound on the merged position count (shared positions collapse), used to
+/// size the Rice parameter and progress bars.
+fn merge_estimate<B: AsRef<[u8]>>(olds: &[&Book<B>], runs: &[SortedEntries]) -> u64 {
+    olds.iter().map(|b| b.position_count()).sum::<u64>()
+        + runs.iter().map(|r| r.0.len() as u64).sum::<u64>()
+}
+
+/// K-way merge of any number of existing books and sorted runs, calling `emit`
+/// with each distinct hash and its combined moves in ascending hash order.
+/// `progress` is called with the running emitted count every
+/// [`PROGRESS_INTERVAL`] positions and once at the end. Shared by the in-RAM and
+/// streaming writers so the heap logic lives in one place.
+fn merge_into<B: AsRef<[u8]>>(
+    olds: &[&Book<B>],
+    runs: &[SortedEntries],
+    mut emit: impl FnMut(u64, &[(u8, u64)]) -> io::Result<()>,
+    mut progress: impl FnMut(u64),
+) -> io::Result<u64> {
     let mut sources: Vec<MergeSource<'_, B>> = Vec::with_capacity(runs.len() + olds.len());
     for book in olds {
         sources.push(MergeSource::Old(book.iter().peekable()));
@@ -521,14 +676,14 @@ pub fn write_merged_many_progress<B: AsRef<[u8]>, W: Write>(
             }
         }
         combine_moves(&mut moves);
-        writer.push(min, &moves);
+        emit(min, &moves)?;
         written += 1;
         if written.is_multiple_of(PROGRESS_INTERVAL) {
             progress(written);
         }
     }
     progress(written);
-    writer.finish(&mut out)
+    Ok(written)
 }
 
 // ---------------------------------------------------------------------------
@@ -980,5 +1135,52 @@ mod tests {
         for &h in second_half {
             assert_eq!(book.lookup(h), vec![MoveStat { index: 2, count: 1 }]);
         }
+    }
+
+    #[test]
+    fn streaming_merge_matches_in_ram() {
+        // The disk-streaming writer must produce a byte-identical book to the
+        // in-RAM writer: same header, same block index, same data section.
+        // Span many blocks (>256 entries) so block boundaries and the on-disk
+        // index flush are exercised.
+        let hashes = test_hashes(3000);
+        let (first_half, second_half) = hashes.split_at(1500);
+
+        let make_base = || {
+            let mut a = BookBuilder::new();
+            for &h in first_half {
+                a.record(h, 1);
+            }
+            write_fresh(a)
+        };
+        let make_run = || {
+            let mut b = BookBuilder::new();
+            for &h in second_half {
+                b.record(h, 2);
+            }
+            for &h in first_half.iter().step_by(3) {
+                b.record(h, 1);
+            }
+            b.into_sorted()
+        };
+
+        let base_bytes = make_base();
+        let base = Book::open(base_bytes.as_slice()).unwrap();
+
+        let mut in_ram = Vec::new();
+        let ram_stats =
+            write_merged_many_progress(&[&base], &[make_run()], &mut in_ram, |_| {}).unwrap();
+
+        let out_path = std::env::temp_dir().join("kc_streaming_merge_test.book");
+        let stream_stats =
+            write_merged_streaming(&[&base], &[make_run()], &out_path, |_| {}).unwrap();
+        let streamed = std::fs::read(&out_path).unwrap();
+        std::fs::remove_file(&out_path).ok();
+        // The data temp file must be cleaned up.
+        assert!(!sibling(&out_path, ".data").exists());
+
+        assert_eq!(ram_stats.positions, stream_stats.positions);
+        assert_eq!(ram_stats.bytes, stream_stats.bytes);
+        assert_eq!(in_ram, streamed, "streamed book differs from in-RAM book");
     }
 }

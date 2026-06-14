@@ -89,6 +89,24 @@ enum Command {
         #[arg(long, default_value_t = 40)]
         max_mem_gb: u64,
     },
+
+    /// Finish a `build` that crashed during the final merge by folding the
+    /// leftover `<book>.spill*` files into the book — no dumps are re-parsed.
+    MergeSpills {
+        /// Month tags (e.g. 2018-01) or dump filenames the crashed build was
+        /// processing, recorded in the `.sources` manifest so `list` shows them
+        /// processed. Needed when the dumps were deleted after spilling, since
+        /// they can no longer be auto-detected on disk.
+        record: Vec<String>,
+
+        /// The book whose spill files to merge (defaults to [storage].book).
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+
+        /// Merge only the spills into a new book, ignoring any existing one.
+        #[arg(long, default_value_t = false)]
+        fresh: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -127,5 +145,8 @@ fn main() -> Result<()> {
                 max_mem_bytes: max_mem_gb.saturating_mul(1 << 30),
             },
         ),
+        Command::MergeSpills { record, output, fresh } => {
+            build::resume_merge(&cfg, output, fresh, &record)
+        }
     }
 }
